@@ -531,12 +531,7 @@ const BallBlasterGame: React.FC = () => {
               </Text>
             </TouchableOpacity>
           ))}
-          <TouchableOpacity
-            style={styles.startButton}
-            onPress={() => setSelectedSubject(PRESET_SUBJECTS[0].id)}
-          >
-            <Text style={styles.startButtonText}>START GAME</Text>
-          </TouchableOpacity>
+          
         </View>
       )}
 
@@ -943,9 +938,10 @@ const styles = StyleSheet.create({
     lineHeight: BRICK_HEIGHT,
   },
   subjectSelectionContainer: {
+    display: 'flex',
     flex: 1,
     backgroundColor: '#0a0a20',
-    padding: 20,
+    padding: 40,
     justifyContent: 'center',
   },
   subjectSelectionTitle: {
@@ -953,10 +949,11 @@ const styles = StyleSheet.create({
     fontSize: 32,
     fontWeight: 'bold',
     textAlign: 'center',
-    marginBottom: 30,
+    paddingBottom: 30,
     textShadowColor: '#ff2d55',
     textShadowOffset: { width: 0, height: 0 },
     textShadowRadius: 10,
+    paddingTop: 60,
   },
   subjectButton: {
     backgroundColor: 'rgba(41, 21, 71, 0.9)',
