@@ -2,33 +2,32 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { StyleSheet, View, Dimensions, Text, TouchableOpacity, Modal } from 'react-native';
 import { PanGestureHandler, GestureHandlerRootView } from 'react-native-gesture-handler';
-import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import Animated, { useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 
 const { width, height } = Dimensions.get('window');
 
-// Constants
+// ----------------- CONSTANTS & TYPES -----------------
 const BALL_RADIUS = 6;
-const BALL_SPEED = 12;
-const LAUNCH_DELAY = 150;
+const BALL_SPEED_PER_SEC = 720; // Approx. 12 px/frame at 60fps -> now consistent with deltaTime
+const LAUNCH_DELAY = 150;       // ms delay between launching balls
 const BRICK_MARGIN = 3;
-const INITIAL_BRICK_ROWS = 4; // Start with fewer rows
-const BRICK_COLS = 8; // Fewer columns too
+const INITIAL_BRICK_ROWS = 4;
+const BRICK_COLS = 8;
 const HEADER_HEIGHT = 80;
 const BOTTOM_CONTROLS_HEIGHT = 80;
 const BRICK_WIDTH = (width - (BRICK_COLS + 1) * BRICK_MARGIN) / BRICK_COLS;
 const BRICK_HEIGHT = 25;
 const LAUNCH_Y = height - BOTTOM_CONTROLS_HEIGHT - 100;
 const INITIAL_LAUNCH_X = width / 2;
-const BRICK_DROP_AMOUNT = 40; // How far bricks drop after each turn
-const LOSS_LINE = LAUNCH_Y - BRICK_HEIGHT * 2; // Line where bricks cause loss
+const BRICK_DROP_AMOUNT = 40;
+const LOSS_LINE = LAUNCH_Y - BRICK_HEIGHT * 2;
 
-// Types
 interface Ball {
   id: number;
   x: number;
   y: number;
-  dx: number;
-  dy: number;
+  dx: number;   // Velocity in x (px/s)
+  dy: number;   // Velocity in y (px/s)
   launched: boolean;
 }
 
@@ -45,7 +44,6 @@ interface Brick {
   points: number;
 }
 
-// Add brick types
 type BrickType = {
   color: string;
   points: number;
@@ -54,10 +52,10 @@ type BrickType = {
 };
 
 const BRICK_TYPES: BrickType[] = [
-  { color: '#4CAF50', points: 1, hits: 1, probability: 0.6 },    // Common green
-  { color: '#2196F3', points: 2, hits: 2, probability: 0.25 },   // Blue
-  { color: '#FFC107', points: 3, hits: 1, probability: 0.1 },    // Special gold
-  { color: '#9C27B0', points: 5, hits: 3, probability: 0.05 },   // Rare purple
+  { color: '#4CAF50', points: 1, hits: 1, probability: 0.6 },
+  { color: '#2196F3', points: 2, hits: 2, probability: 0.25 },
+  { color: '#FFC107', points: 3, hits: 1, probability: 0.1 },
+  { color: '#9C27B0', points: 5, hits: 3, probability: 0.05 },
 ];
 
 interface GameState {
@@ -65,31 +63,29 @@ interface GameState {
   gameStatus: 'playing' | 'won' | 'lost';
 }
 
+
+// ----------------- MAIN COMPONENT -----------------
 const BallBlasterGame: React.FC = () => {
-  // Remove debug state
+  // ----------------- REFS & STATE -----------------
   const gameLoop = useRef<number | null>(null);
   const lastFrameTime = useRef<number>(0);
+
   const isLaunching = useRef<boolean>(false);
   const launchQueue = useRef<Ball[]>([]);
   const lastLaunchTime = useRef<number>(0);
   const lastBallX = useRef<number>(INITIAL_LAUNCH_X);
-  
-  // Game state
+
   const [balls, setBalls] = useState<Ball[]>([]);
   const [bricks, setBricks] = useState<Brick[]>([]);
   const [score, setScore] = useState(0);
   const [ballCount, setBallCount] = useState(10);
   const [isGameActive, setIsGameActive] = useState(true);
-  const [gameState, setGameState] = useState<GameState>({
-    level: 1,
-    gameStatus: 'playing'
-  });
-  
-  // Touch handling
+  const [gameState, setGameState] = useState<GameState>({ level: 1, gameStatus: 'playing' });
+
   const touchActive = useRef<boolean>(false);
   const launchAngle = useSharedValue(0);
 
-  // Initialize game
+  // ----------------- EFFECTS -----------------
   useEffect(() => {
     initializeGame();
     return () => {
@@ -97,15 +93,26 @@ const BallBlasterGame: React.FC = () => {
     };
   }, []);
 
+
+  // ----------------- GAME INITIALIZATION -----------------
   const getBrickRowsForLevel = (level: number) => {
-    return INITIAL_BRICK_ROWS + Math.floor(level / 2); // Add a row every 2 levels
+    return INITIAL_BRICK_ROWS + Math.floor(level / 2);
   };
 
   const initializeGame = useCallback((level: number = 1) => {
-    // Reset ball position
+    // Reset turn and launching states
+    isLaunching.current = false;
+    lastTurnHadLaunch.current = false;
+    launchQueue.current = [];
+    lastFrameTime.current = 0; // Resetting frame time reference
+    if (gameLoop.current) {
+      cancelAnimationFrame(gameLoop.current);
+      gameLoop.current = null;
+    }
+  
+    // Reset ball position and state
     lastBallX.current = INITIAL_LAUNCH_X;
-
-    // Initialize balls
+  
     const initialBalls: Ball[] = Array.from({ length: ballCount }, (_, i) => ({
       id: i,
       x: INITIAL_LAUNCH_X,
@@ -114,33 +121,29 @@ const BallBlasterGame: React.FC = () => {
       dy: 0,
       launched: false
     }));
-
+  
+    const initialBricks: Brick[] = generateBricksForLevel(level);
+  
     setBalls(initialBalls);
-    setBricks([]);
+    setBricks(initialBricks);
+    setGameState({ level, gameStatus: 'playing' });
+    
+    // Restart the game loop
+    startGameLoop();
+  }, [ballCount]);
 
-    // Initialize bricks with random types and gaps
+  const generateBricksForLevel = (level: number): Brick[] => {
+    const rowsForLevel = getBrickRowsForLevel(level);
     const initialBricks: Brick[] = [];
     let brickId = 0;
-    const rowsForLevel = getBrickRowsForLevel(level);
 
     for (let row = 0; row < rowsForLevel; row++) {
       for (let col = 0; col < BRICK_COLS; col++) {
-        // Reduce gap probability as levels increase
+        // As level increases, fewer gaps
         const gapProbability = Math.max(0.1, 0.3 - (level * 0.05));
         if (Math.random() < gapProbability) continue;
 
-        const rand = Math.random();
-        let cumProb = 0;
-        let selectedType = BRICK_TYPES[0];
-        
-        for (const type of BRICK_TYPES) {
-          cumProb += type.probability;
-          if (rand < cumProb) {
-            selectedType = type;
-            break;
-          }
-        }
-
+        const selectedType = selectBrickType();
         initialBricks.push({
           id: brickId++,
           x: col * (BRICK_WIDTH + BRICK_MARGIN) + BRICK_MARGIN,
@@ -155,141 +158,30 @@ const BallBlasterGame: React.FC = () => {
         });
       }
     }
+    return initialBricks;
+  };
 
-    setBricks(initialBricks);
-    setGameState({ level, gameStatus: 'playing' });
-    startGameLoop();
-  }, [ballCount]);
+  const selectBrickType = () => {
+    const rand = Math.random();
+    let cumProb = 0;
+    for (const type of BRICK_TYPES) {
+      cumProb += type.probability;
+      if (rand < cumProb) {
+        return type;
+      }
+    }
+    return BRICK_TYPES[0];
+  };
 
+  // ----------------- GAME LOOP -----------------
   const startGameLoop = useCallback(() => {
     const updateGame = (timestamp: number) => {
       if (!lastFrameTime.current) lastFrameTime.current = timestamp;
       const deltaTime = timestamp - lastFrameTime.current;
       lastFrameTime.current = timestamp;
 
-      // Launch queued balls
-      if (isLaunching.current && launchQueue.current.length > 0) {
-        const currentTime = timestamp;
-        if (currentTime - lastLaunchTime.current >= LAUNCH_DELAY) {
-          const ballToLaunch = launchQueue.current[0];
-
-          setBalls(prev => {
-            const newBalls = [...prev];
-            const ballIndex = newBalls.findIndex(b => b.id === ballToLaunch.id);
-            if (ballIndex !== -1) {
-              newBalls[ballIndex] = {
-                ...ballToLaunch,
-                launched: true
-              };
-            }
-            return newBalls;
-          });
-
-          launchQueue.current = launchQueue.current.slice(1);
-          lastLaunchTime.current = currentTime;
-        }
-      }
-
-      // Update ball positions and handle collisions
-      setBalls(prevBalls => {
-        const newBalls = [...prevBalls];
-        let allBallsReturned = true;
-
-        setBricks(prevBricks => {
-          const updatedBricks = [...prevBricks];
-          let bricksNeedUpdate = false;
-
-          for (let i = 0; i < newBalls.length; i++) {
-            const ball = newBalls[i];
-            if (!ball.launched) continue;
-            allBallsReturned = false;
-
-            let newX = ball.x + ball.dx;
-            let newY = ball.y + ball.dy;
-
-            // Wall collisions
-            if (newX - BALL_RADIUS <= 0 || newX + BALL_RADIUS >= width) {
-              ball.dx = -ball.dx;
-              newX = ball.x + ball.dx;
-            }
-            if (newY - BALL_RADIUS <= 0) {
-              ball.dy = -ball.dy;
-              newY = ball.y + ball.dy;
-            }
-            if (newY + BALL_RADIUS >= height - BOTTOM_CONTROLS_HEIGHT) {
-              // Update the last ball position when it hits the bottom
-              lastBallX.current = newX;
-              newBalls[i] = { 
-                ...ball, 
-                x: lastBallX.current, 
-                y: LAUNCH_Y, 
-                launched: false 
-              };
-              continue;
-            }
-
-            // Brick collisions
-            let hasCollided = false;
-            for (let j = 0; j < updatedBricks.length && !hasCollided; j++) {
-              const brick = updatedBricks[j];
-              if (!brick.visible) continue;
-
-              // Check collision
-              if (
-                newX + BALL_RADIUS > brick.x &&
-                newX - BALL_RADIUS < brick.x + brick.width &&
-                newY + BALL_RADIUS > brick.y &&
-                newY - BALL_RADIUS < brick.y + brick.height
-              ) {
-                // Determine collision side
-                const fromLeft = Math.abs((newX + BALL_RADIUS) - brick.x);
-                const fromRight = Math.abs((newX - BALL_RADIUS) - (brick.x + brick.width));
-                const fromTop = Math.abs((newY + BALL_RADIUS) - brick.y);
-                const fromBottom = Math.abs((newY - BALL_RADIUS) - (brick.y + brick.height));
-                const minOverlap = Math.min(fromLeft, fromRight, fromTop, fromBottom);
-
-                // Bounce based on collision side
-                if (minOverlap === fromLeft || minOverlap === fromRight) {
-                  ball.dx = -ball.dx;
-                  newX = ball.x + ball.dx;
-                } else {
-                  ball.dy = -ball.dy;
-                  newY = ball.y + ball.dy;
-                }
-
-                // Update brick
-                brick.hits--;
-                if (brick.hits <= 0) {
-                  brick.visible = false;
-                  bricksNeedUpdate = true;
-                  setScore(prev => prev + brick.points);
-                  if (brick.special) {
-                    setBallCount(prev => prev + 1);
-                  }
-                }
-                hasCollided = true;
-                updatedBricks[j] = brick;
-              }
-            }
-
-            // Update ball position
-            newBalls[i] = { ...ball, x: newX, y: newY };
-          }
-
-          // If all balls have returned, update their x positions to the last ball's position
-          if (allBallsReturned && isLaunching.current) {
-            isLaunching.current = false;
-            launchQueue.current = [];
-            newBalls.forEach(ball => {
-              ball.x = lastBallX.current;
-            });
-          }
-
-          return bricksNeedUpdate ? updatedBricks : prevBricks;
-        });
-
-        return newBalls;
-      });
+      handleQueuedLaunches(timestamp);
+      updateBallsAndBricks(deltaTime);
 
       gameLoop.current = requestAnimationFrame(updateGame);
     };
@@ -297,10 +189,156 @@ const BallBlasterGame: React.FC = () => {
     gameLoop.current = requestAnimationFrame(updateGame);
   }, []);
 
+  // Handle launching balls in queue
+  const handleQueuedLaunches = (timestamp: number) => {
+    if (isLaunching.current && launchQueue.current.length > 0) {
+      const currentTime = timestamp;
+      if (currentTime - lastLaunchTime.current >= LAUNCH_DELAY) {
+        const [ballToLaunch, ...rest] = launchQueue.current;
+        launchQueue.current = rest;
+        setBalls(prev => {
+          const idx = prev.findIndex(b => b.id === ballToLaunch.id);
+          if (idx !== -1) {
+            const newBalls = [...prev];
+            newBalls[idx] = { ...ballToLaunch, launched: true };
+            return newBalls;
+          }
+          return prev;
+        });
+        lastLaunchTime.current = currentTime;
+      }
+    }
+  };
+
+  // Update balls and handle collisions with walls and bricks
+  const updateBallsAndBricks = (deltaTime: number) => {
+    const deltaSec = deltaTime / 1000;
+
+    setBalls(prevBalls => {
+      const newBalls = [...prevBalls];
+      let allBallsReturned = true;
+
+      setBricks(prevBricks => {
+        const updatedBricks = [...prevBricks];
+        let bricksUpdated = false;
+
+        for (let i = 0; i < newBalls.length; i++) {
+          const ball = newBalls[i];
+          if (!ball.launched) continue;
+          allBallsReturned = false;
+
+          const { newX, newY, collidedWithBrick, brickIndex } = updateBallPosition(ball, deltaSec, updatedBricks);
+
+          // If ball returned to bottom
+          if (newY + BALL_RADIUS >= height - BOTTOM_CONTROLS_HEIGHT) {
+            lastBallX.current = newX;
+            newBalls[i] = { ...ball, x: lastBallX.current, y: LAUNCH_Y, launched: false };
+            continue;
+          }
+
+          // Update brick if collision occurred
+          if (collidedWithBrick && brickIndex !== null && updatedBricks[brickIndex]) {
+            const brick = updatedBricks[brickIndex];
+            brick.hits--;
+            if (brick.hits <= 0) {
+              brick.visible = false;
+              bricksUpdated = true;
+              setScore(prev => prev + brick.points);
+              if (brick.special) {
+                setBallCount(prev => prev + 1);
+              }
+            }
+            updatedBricks[brickIndex] = brick;
+          }
+
+          // Update ball position
+          newBalls[i] = { ...ball, x: newX, y: newY };
+        }
+
+        // If all balls have returned, end turn
+        if (allBallsReturned && isLaunching.current) {
+          endTurn(newBalls);
+        }
+
+        return bricksUpdated ? updatedBricks : prevBricks;
+      });
+
+      return newBalls;
+    });
+  };
+
+  const endTurn = (updatedBalls: Ball[]) => {
+    isLaunching.current = false;
+    launchQueue.current = [];
+    updatedBalls.forEach(ball => {
+      ball.x = lastBallX.current;
+    });
+  };
+
+  const updateBallPosition = (
+    ball: Ball,
+    deltaSec: number,
+    updatedBricks: Brick[]
+  ): { newX: number; newY: number; collidedWithBrick: boolean; brickIndex: number | null } => {
+    // Apply velocity with deltaTime for consistent movement speed
+    let newX = ball.x + ball.dx * deltaSec;
+    let newY = ball.y + ball.dy * deltaSec;
+
+    // Collision with walls
+    if (newX - BALL_RADIUS <= 0 || newX + BALL_RADIUS >= width) {
+      const newDx = -ball.dx;
+      newX = ball.x + newDx * deltaSec;
+      ball.dx = newDx;
+    }
+
+    if (newY - BALL_RADIUS <= 0) {
+      const newDy = -ball.dy;
+      newY = ball.y + newDy * deltaSec;
+      ball.dy = newDy;
+    }
+
+    // Check brick collision
+    let collidedWithBrick = false;
+    let brickIndex: number | null = null;
+    for (let j = 0; j < updatedBricks.length && !collidedWithBrick; j++) {
+      const brick = updatedBricks[j];
+      if (!brick.visible) continue;
+
+      if (
+        newX + BALL_RADIUS > brick.x &&
+        newX - BALL_RADIUS < brick.x + brick.width &&
+        newY + BALL_RADIUS > brick.y &&
+        newY - BALL_RADIUS < brick.y + brick.height
+      ) {
+        // Determine collision side
+        const fromLeft = Math.abs((newX + BALL_RADIUS) - brick.x);
+        const fromRight = Math.abs((newX - BALL_RADIUS) - (brick.x + brick.width));
+        const fromTop = Math.abs((newY + BALL_RADIUS) - brick.y);
+        const fromBottom = Math.abs((newY - BALL_RADIUS) - (brick.y + brick.height));
+        const minOverlap = Math.min(fromLeft, fromRight, fromTop, fromBottom);
+
+        // Bounce direction
+        if (minOverlap === fromLeft || minOverlap === fromRight) {
+          ball.dx = -ball.dx;
+          newX = ball.x + ball.dx * deltaSec;
+        } else {
+          ball.dy = -ball.dy;
+          newY = ball.y + ball.dy * deltaSec;
+        }
+
+        collidedWithBrick = true;
+        brickIndex = j;
+      }
+    }
+
+    return { newX, newY, collidedWithBrick, brickIndex };
+  };
+
+  // Recall all balls
   const recallBalls = useCallback(() => {
     setBalls(prev => prev.map(ball => ({
       ...ball,
-      x: lastBallX.current, // Use last ball position
+      x: lastBallX.current,
       y: LAUNCH_Y,
       dx: 0,
       dy: 0,
@@ -310,84 +348,72 @@ const BallBlasterGame: React.FC = () => {
     launchQueue.current = [];
   }, []);
 
+  // ----------------- TOUCH & GESTURE HANDLERS -----------------
   const onGestureEvent = useCallback((event: any) => {
     if (!isGameActive) return;
-    
+
     const touchX = event.nativeEvent.x;
     const touchY = event.nativeEvent.y;
-    
-    // Simple angle calculation: from ball position to touch point
+
+    // Calculate angle from launcher position to touch
     const dx = touchX - lastBallX.current;
-    const dy = (touchY - LAUNCH_Y); // Negative because y increases downward
+    const dy = (touchY - LAUNCH_Y);
     let angle = Math.atan2(dy, dx);
-    
-    // Restrict to upward angles only (between -80 and 80 degrees)
-    const maxAngle = (180 * Math.PI) / 180; // 80 degrees in radians
+
+    // Limit angle to a forward/upward range
+    const maxAngle = Math.PI; // adjust if you want narrower angles
     angle = Math.max(-maxAngle, Math.min(maxAngle, angle));
-    
+
     launchAngle.value = angle;
     touchActive.current = true;
   }, [isGameActive]);
+
+  const lastTurnHadLaunch = useRef<boolean>(false);
 
   const onGestureEnd = useCallback(() => {
     if (!isGameActive || !touchActive.current) return;
     touchActive.current = false;
 
-    // Use the same angle for launch
-    const angle = launchAngle.value;
-    const dx = Math.cos(angle) * BALL_SPEED;
-    const dy = Math.sin(angle) * BALL_SPEED;
+    const allBallsReturned = balls.every(ball => !ball.launched);
+    // Only allow launching if a turn isn't in progress and all balls are back
+    if (isLaunching.current || !allBallsReturned) {
+      return;
+    }
 
-    // Create launch queue with proper velocities
+    const angle = launchAngle.value;
+    const dx = Math.cos(angle) * BALL_SPEED_PER_SEC;
+    const dy = Math.sin(angle) * BALL_SPEED_PER_SEC;
+
     const unlaunched = balls.filter(ball => !ball.launched);
     if (unlaunched.length > 0) {
-      launchQueue.current = unlaunched.map(ball => ({
-        ...ball,
-        dx,
-        dy
-      }));
-      
+      // A turn is starting because we are launching balls
+      lastTurnHadLaunch.current = true;
+
+      launchQueue.current = unlaunched.map(ball => ({ ...ball, dx, dy }));
       isLaunching.current = true;
       lastLaunchTime.current = performance.now() - LAUNCH_DELAY;
     }
   }, [balls, isGameActive]);
 
-  // Animated style for the direction indicator
-  const indicatorStyle = useAnimatedStyle(() => ({
-    transform: [
-      { rotate: `${launchAngle.value}rad` }
-    ]
-  }));
-
-  // Add debug button to force launch
-  const debugForceLaunch = useCallback(() => {
-    const angle = Math.PI / 4; // 45 degrees
-    const dx = Math.cos(angle) * BALL_SPEED;
-    const dy = -Math.sin(angle) * BALL_SPEED;
-
-    setBalls(prev => prev.map(ball => ({
-      ...ball,
-      dx,
-      dy,
-      launched: true
-    })));
-  }, []);
-
-  // Check if all balls have returned and move bricks down
+  // ----------------- CHECK TURN END & LEVEL PROGRESSION -----------------
   useEffect(() => {
     if (gameState.gameStatus !== 'playing') return;
 
     const allBallsReturned = balls.every(ball => !ball.launched);
     const visibleBricks = bricks.filter(brick => brick.visible);
-    
-    if (allBallsReturned && !isLaunching.current) {
-      // Only check for win if we have bricks and all are cleared
+
+    // Only do end-of-turn logic if a turn actually occurred
+    if (allBallsReturned && !isLaunching.current && lastTurnHadLaunch.current) {
+      // Reset the turn flag
+      lastTurnHadLaunch.current = false;
+
+      // Check if player cleared the level
       if (bricks.length > 0 && visibleBricks.length === 0) {
         setGameState(prev => ({ ...prev, gameStatus: 'won' }));
         return;
       }
 
-      // Only move bricks if there are still some visible
+      // Move bricks down if any are still visible
       if (visibleBricks.length > 0) {
         setBricks(prevBricks => {
           const newBricks = prevBricks.map(brick => ({
@@ -395,16 +421,17 @@ const BallBlasterGame: React.FC = () => {
             y: brick.y + BRICK_DROP_AMOUNT
           }));
 
-          // Check for loss (any visible brick below loss line)
-          if (newBricks.some(brick => brick.visible && brick.y > LOSS_LINE)) {
+          // Check for loss condition
+          if (newBricks.some(b => b.visible && b.y > LOSS_LINE)) {
             setGameState(prev => ({ ...prev, gameStatus: 'lost' }));
           }
           return newBricks;
         });
       }
     }
-  }, [gameState.gameStatus, isLaunching.current]);
+  }, [gameState.gameStatus, isLaunching.current, balls, bricks]);
 
+  // ----------------- LEVEL & GAME RESETS -----------------
   const startNextLevel = () => {
     initializeGame(gameState.level + 1);
   };
@@ -413,6 +440,15 @@ const BallBlasterGame: React.FC = () => {
     initializeGame(1);
   };
 
+  // ----------------- ANIMATED STYLES -----------------
+  const indicatorStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${launchAngle.value}rad` }]
+  }));
+
+  const allBallsReturned = balls.every(ball => !ball.launched);
+  const canLaunch = isGameActive && !isLaunching.current && allBallsReturned;
+
+  // ----------------- RENDER -----------------
   return (
     <GestureHandlerRootView style={styles.container}>
       {/* Header */}
@@ -438,17 +474,16 @@ const BallBlasterGame: React.FC = () => {
           {touchActive.current && (
             <View style={styles.directionIndicatorContainer}>
               <Animated.View
-                  style={[
-                    styles.directionIndicatorDash,
-                    {
-                      left: lastBallX.current,
-                      top: LAUNCH_Y,
-                      transform: [
-                        { rotate: `${launchAngle.value}rad` }
-                      ],
-                    },
-                  ]}
-                />
+                style={[
+                  styles.directionIndicatorDash,
+                  {
+                    left: lastBallX.current,
+                    top: LAUNCH_Y,
+                    transform: [{ rotate: `${launchAngle.value}rad` }],
+                    borderColor: canLaunch ? 'rgba(255, 255, 255, 0.25)' : 'rgba(255, 0, 0, 0.5)',
+                  },
+                ]}
+              />
             </View>
           )}
 
@@ -550,6 +585,8 @@ const BallBlasterGame: React.FC = () => {
   );
 };
 
+
+// ----------------- STYLES -----------------
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -598,7 +635,7 @@ const styles = StyleSheet.create({
   ball: {
     position: 'absolute',
     borderRadius: BALL_RADIUS,
-    zIndex: 100, // Increase z-index
+    zIndex: 100,
   },
   brick: {
     position: 'absolute',
@@ -611,18 +648,18 @@ const styles = StyleSheet.create({
   },
   directionIndicatorContainer: {
     position: 'absolute',
-    height: 0, // Line thickness is controlled by borderWidth
-    width: 100, // Adjust length as needed
+    height: 0,
+    width: 100,
     transformOrigin: 'left',
     zIndex: 1000,
   },
   directionIndicatorDash: {
     position: 'absolute',
-    height: 0, // Line thickness is controlled by borderWidth
-    width: 250, // Adjust length as needed
-    borderWidth: 1, // Thickness of the dashed line
-    borderColor: 'rgba(255, 255, 255, 0.25)', // Line color
-    borderStyle: 'dotted', // Make it dashed
+    height: 0,
+    width: 250,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+    borderStyle: 'dotted',
     transformOrigin: 'left',
     zIndex: 1000,
   },
@@ -707,4 +744,3 @@ const styles = StyleSheet.create({
 });
 
 export default BallBlasterGame;
-
