@@ -1,26 +1,26 @@
 // BallBlasterGame.tsx
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { StyleSheet, View, Dimensions, Text, TouchableOpacity } from 'react-native';
+import { StyleSheet, View, Dimensions, Text, TouchableOpacity, Modal } from 'react-native';
 import { PanGestureHandler, GestureHandlerRootView } from 'react-native-gesture-handler';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 
 const { width, height } = Dimensions.get('window');
 
 // Constants
-const BALL_RADIUS = 8;
+const BALL_RADIUS = 6;
 const BALL_SPEED = 12;
 const LAUNCH_DELAY = 150;
 const BRICK_MARGIN = 3;
-const BRICK_ROWS = 12;
-const BRICK_COLS = 12;
+const INITIAL_BRICK_ROWS = 4; // Start with fewer rows
+const BRICK_COLS = 8; // Fewer columns too
 const HEADER_HEIGHT = 80;
+const BOTTOM_CONTROLS_HEIGHT = 80;
 const BRICK_WIDTH = (width - (BRICK_COLS + 1) * BRICK_MARGIN) / BRICK_COLS;
 const BRICK_HEIGHT = 25;
-const BOTTOM_CONTROLS_HEIGHT = 80;
 const LAUNCH_Y = height - BOTTOM_CONTROLS_HEIGHT - 100;
 const INITIAL_LAUNCH_X = width / 2;
-const MIN_ANGLE = Math.PI / 90; // 2 degrees above horizontal
-const MAX_ANGLE = Math.PI - MIN_ANGLE;
+const BRICK_DROP_AMOUNT = 40; // How far bricks drop after each turn
+const LOSS_LINE = LAUNCH_Y - BRICK_HEIGHT * 2; // Line where bricks cause loss
 
 // Types
 interface Ball {
@@ -60,19 +60,13 @@ const BRICK_TYPES: BrickType[] = [
   { color: '#9C27B0', points: 5, hits: 3, probability: 0.05 },   // Rare purple
 ];
 
-interface DebugBallInfo {
-  x: number;
-  y: number;
-  launched: boolean;
-}
-
-interface DebugInfo {
-  ballCount: number;
-  ballPositions: DebugBallInfo[];
+interface GameState {
+  level: number;
+  gameStatus: 'playing' | 'won' | 'lost';
 }
 
 const BallBlasterGame: React.FC = () => {
-  // Refs for game state
+  // Remove debug state
   const gameLoop = useRef<number | null>(null);
   const lastFrameTime = useRef<number>(0);
   const isLaunching = useRef<boolean>(false);
@@ -86,39 +80,31 @@ const BallBlasterGame: React.FC = () => {
   const [score, setScore] = useState(0);
   const [ballCount, setBallCount] = useState(10);
   const [isGameActive, setIsGameActive] = useState(true);
+  const [gameState, setGameState] = useState<GameState>({
+    level: 1,
+    gameStatus: 'playing'
+  });
   
   // Touch handling
   const touchActive = useRef<boolean>(false);
   const launchAngle = useSharedValue(0);
 
-  // Add debug info display
-  const [debugInfo, setDebugInfo] = useState<DebugInfo>({ 
-    ballCount: 0, 
-    ballPositions: [] 
-  });
-
-  useEffect(() => {
-    // Update debug info whenever balls change
-    setDebugInfo({
-      ballCount: balls.length,
-      ballPositions: balls.map(b => ({ 
-        x: b.x, 
-        y: b.y, 
-        launched: b.launched 
-      }))
-    });
-  }, [balls]);
-
   // Initialize game
   useEffect(() => {
-    console.log('Initializing game'); // Debug log
     initializeGame();
     return () => {
       if (gameLoop.current) cancelAnimationFrame(gameLoop.current);
     };
   }, []);
 
-  const initializeGame = useCallback(() => {
+  const getBrickRowsForLevel = (level: number) => {
+    return INITIAL_BRICK_ROWS + Math.floor(level / 2); // Add a row every 2 levels
+  };
+
+  const initializeGame = useCallback((level: number = 1) => {
+    // Reset ball position
+    lastBallX.current = INITIAL_LAUNCH_X;
+
     // Initialize balls
     const initialBalls: Ball[] = Array.from({ length: ballCount }, (_, i) => ({
       id: i,
@@ -129,15 +115,20 @@ const BallBlasterGame: React.FC = () => {
       launched: false
     }));
 
-    console.log('Setting initial balls:', initialBalls.length); // Debug log
     setBalls(initialBalls);
-    setBricks([]); // Clear existing bricks before setting new ones
+    setBricks([]);
 
-    // Initialize bricks with random types
+    // Initialize bricks with random types and gaps
     const initialBricks: Brick[] = [];
-    for (let row = 0; row < BRICK_ROWS; row++) {
+    let brickId = 0;
+    const rowsForLevel = getBrickRowsForLevel(level);
+
+    for (let row = 0; row < rowsForLevel; row++) {
       for (let col = 0; col < BRICK_COLS; col++) {
-        // Random brick type selection
+        // Reduce gap probability as levels increase
+        const gapProbability = Math.max(0.1, 0.3 - (level * 0.05));
+        if (Math.random() < gapProbability) continue;
+
         const rand = Math.random();
         let cumProb = 0;
         let selectedType = BRICK_TYPES[0];
@@ -151,7 +142,7 @@ const BallBlasterGame: React.FC = () => {
         }
 
         initialBricks.push({
-          id: row * BRICK_COLS + col,
+          id: brickId++,
           x: col * (BRICK_WIDTH + BRICK_MARGIN) + BRICK_MARGIN,
           y: row * (BRICK_HEIGHT + BRICK_MARGIN) + HEADER_HEIGHT,
           width: BRICK_WIDTH,
@@ -165,8 +156,8 @@ const BallBlasterGame: React.FC = () => {
       }
     }
 
-    console.log('Setting initial bricks:', initialBricks.length); // Debug log
     setBricks(initialBricks);
+    setGameState({ level, gameStatus: 'playing' });
     startGameLoop();
   }, [ballCount]);
 
@@ -181,7 +172,6 @@ const BallBlasterGame: React.FC = () => {
         const currentTime = timestamp;
         if (currentTime - lastLaunchTime.current >= LAUNCH_DELAY) {
           const ballToLaunch = launchQueue.current[0];
-          console.log('Launching ball:', ballToLaunch); // Debug log
 
           setBalls(prev => {
             const newBalls = [...prev];
@@ -326,20 +316,14 @@ const BallBlasterGame: React.FC = () => {
     const touchX = event.nativeEvent.x;
     const touchY = event.nativeEvent.y;
     
-    // Calculate angle directly from launch point to touch position
-    const dx = touchX - INITIAL_LAUNCH_X;
-    const dy = touchY - LAUNCH_Y;
-    let angle = Math.atan2(-dy, dx);
-
-    // Convert angle to be between 0 and 2π
-    angle = angle < 0 ? angle + 2 * Math.PI : angle;
+    // Simple angle calculation: from ball position to touch point
+    const dx = touchX - lastBallX.current;
+    const dy = (touchY - LAUNCH_Y); // Negative because y increases downward
+    let angle = Math.atan2(dy, dx);
     
-    // Clamp the angle between MIN_ANGLE and MAX_ANGLE
-    if (angle > MAX_ANGLE) {
-      angle = MAX_ANGLE;
-    } else if (angle < MIN_ANGLE) {
-      angle = MIN_ANGLE;
-    }
+    // Restrict to upward angles only (between -80 and 80 degrees)
+    const maxAngle = (180 * Math.PI) / 180; // 80 degrees in radians
+    angle = Math.max(-maxAngle, Math.min(maxAngle, angle));
     
     launchAngle.value = angle;
     touchActive.current = true;
@@ -347,19 +331,15 @@ const BallBlasterGame: React.FC = () => {
 
   const onGestureEnd = useCallback(() => {
     if (!isGameActive || !touchActive.current) return;
-    
     touchActive.current = false;
-    console.log('Gesture end, preparing launch'); // Debug log
 
-    // Launch balls in the direction of the last touch point
+    // Use the same angle for launch
     const angle = launchAngle.value;
     const dx = Math.cos(angle) * BALL_SPEED;
-    const dy = -Math.sin(angle) * BALL_SPEED;
+    const dy = Math.sin(angle) * BALL_SPEED;
 
     // Create launch queue with proper velocities
     const unlaunched = balls.filter(ball => !ball.launched);
-    console.log('Unlaunched balls:', unlaunched.length); // Debug log
-
     if (unlaunched.length > 0) {
       launchQueue.current = unlaunched.map(ball => ({
         ...ball,
@@ -368,18 +348,15 @@ const BallBlasterGame: React.FC = () => {
       }));
       
       isLaunching.current = true;
-      lastLaunchTime.current = performance.now() - LAUNCH_DELAY; // Start first launch immediately
-      console.log('Launch queue created:', launchQueue.current.length); // Debug log
+      lastLaunchTime.current = performance.now() - LAUNCH_DELAY;
     }
   }, [balls, isGameActive]);
 
   // Animated style for the direction indicator
   const indicatorStyle = useAnimatedStyle(() => ({
     transform: [
-      { translateX: 0 },
-      { rotate: `${launchAngle.value}rad` },
-      { scaleX: 1.2 }, // Make the line slightly longer
-    ],
+      { rotate: `${launchAngle.value}rad` }
+    ]
   }));
 
   // Add debug button to force launch
@@ -395,6 +372,46 @@ const BallBlasterGame: React.FC = () => {
       launched: true
     })));
   }, []);
+
+  // Check if all balls have returned and move bricks down
+  useEffect(() => {
+    if (gameState.gameStatus !== 'playing') return;
+
+    const allBallsReturned = balls.every(ball => !ball.launched);
+    const visibleBricks = bricks.filter(brick => brick.visible);
+    
+    if (allBallsReturned && !isLaunching.current) {
+      // Only check for win if we have bricks and all are cleared
+      if (bricks.length > 0 && visibleBricks.length === 0) {
+        setGameState(prev => ({ ...prev, gameStatus: 'won' }));
+        return;
+      }
+
+      // Only move bricks if there are still some visible
+      if (visibleBricks.length > 0) {
+        setBricks(prevBricks => {
+          const newBricks = prevBricks.map(brick => ({
+            ...brick,
+            y: brick.y + BRICK_DROP_AMOUNT
+          }));
+
+          // Check for loss (any visible brick below loss line)
+          if (newBricks.some(brick => brick.visible && brick.y > LOSS_LINE)) {
+            setGameState(prev => ({ ...prev, gameStatus: 'lost' }));
+          }
+          return newBricks;
+        });
+      }
+    }
+  }, [gameState.gameStatus, isLaunching.current]);
+
+  const startNextLevel = () => {
+    initializeGame(gameState.level + 1);
+  };
+
+  const restartGame = () => {
+    initializeGame(1);
+  };
 
   return (
     <GestureHandlerRootView style={styles.container}>
@@ -417,35 +434,23 @@ const BallBlasterGame: React.FC = () => {
         onCancelled={onGestureEnd}
       >
         <View style={styles.gameArea}>
-          {/* Debug marker for launch position */}
-          <View 
-            style={[
-              styles.debugMarker,
-              {
-                left: INITIAL_LAUNCH_X - 2,
-                top: LAUNCH_Y - 2,
-              }
-            ]} 
-          />
-
-          {/* Balls with enhanced visibility */}
-          {balls.map((ball) => (
-            <View
-              key={ball.id}
-              style={[
-                styles.ball,
-                {
-                  left: ball.x - BALL_RADIUS,
-                  top: ball.y - BALL_RADIUS,
-                  width: BALL_RADIUS * 2,
-                  height: BALL_RADIUS * 2,
-                  backgroundColor: ball.launched ? '#ff0000' : '#ffffff',
-                  borderWidth: 2,
-                  borderColor: '#000',
-                },
-              ]}
-            />
-          ))}
+          {/* Direction Indicator */}
+          {touchActive.current && (
+            <View style={styles.directionIndicatorContainer}>
+              <Animated.View
+                  style={[
+                    styles.directionIndicatorDash,
+                    {
+                      left: lastBallX.current,
+                      top: LAUNCH_Y,
+                      transform: [
+                        { rotate: `${launchAngle.value}rad` }
+                      ],
+                    },
+                  ]}
+                />
+            </View>
+          )}
 
           {/* Bricks */}
           {bricks.map((brick) =>
@@ -467,38 +472,24 @@ const BallBlasterGame: React.FC = () => {
             )
           )}
 
-          {/* Direction Indicator */}
-          {touchActive.current && (
-            <Animated.View
+          {/* Balls */}
+          {balls.map((ball) => (
+            <View
+              key={ball.id}
               style={[
-                styles.directionIndicator,
+                styles.ball,
                 {
-                  left: INITIAL_LAUNCH_X,
-                  top: LAUNCH_Y,
-                  backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                  left: ball.x - BALL_RADIUS,
+                  top: ball.y - BALL_RADIUS,
+                  width: BALL_RADIUS * 2,
+                  height: BALL_RADIUS * 2,
+                  backgroundColor: '#fff',
+                  borderWidth: 2,
+                  borderColor: '#000',
                 },
-                indicatorStyle,
               ]}
             />
-          )}
-
-          {/* Debug Info */}
-          <View style={styles.debugInfo}>
-            <Text style={styles.debugText}>
-              Balls: {debugInfo.ballCount}{'\n'}
-              First Ball: {debugInfo.ballPositions[0] ? 
-                `x:${Math.round(debugInfo.ballPositions[0].x)} y:${Math.round(debugInfo.ballPositions[0].y)} ${debugInfo.ballPositions[0].launched ? 'launched' : 'waiting'}` 
-                : 'none'}{'\n'}
-              Launch Queue: {launchQueue.current.length}{'\n'}
-              Is Launching: {isLaunching.current ? 'yes' : 'no'}
-            </Text>
-            <TouchableOpacity 
-              style={styles.debugButton} 
-              onPress={debugForceLaunch}
-            >
-              <Text style={styles.debugButtonText}>Force Launch</Text>
-            </TouchableOpacity>
-          </View>
+          ))}
         </View>
       </PanGestureHandler>
 
@@ -514,6 +505,47 @@ const BallBlasterGame: React.FC = () => {
         <View style={styles.buttonPlaceholder} />
         <View style={styles.buttonPlaceholder} />
       </View>
+
+      {/* Level Complete Modal */}
+      <Modal
+        transparent={true}
+        visible={gameState.gameStatus === 'won'}
+        animationType="fade"
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Level {gameState.level} Complete!</Text>
+            <Text style={styles.modalScore}>Score: {score}</Text>
+            <TouchableOpacity 
+              style={styles.modalButton}
+              onPress={startNextLevel}
+            >
+              <Text style={styles.modalButtonText}>Next Level</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Game Over Modal */}
+      <Modal
+        transparent={true}
+        visible={gameState.gameStatus === 'lost'}
+        animationType="fade"
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Game Over</Text>
+            <Text style={styles.modalScore}>Final Score: {score}</Text>
+            <Text style={styles.modalLevel}>Made it to Level {gameState.level}</Text>
+            <TouchableOpacity 
+              style={styles.modalButton}
+              onPress={restartGame}
+            >
+              <Text style={styles.modalButtonText}>Play Again</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </GestureHandlerRootView>
   );
 };
@@ -521,7 +553,7 @@ const BallBlasterGame: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a1a1a', // Darker background
+    backgroundColor: '#1a1a1a',
   },
   header: {
     height: HEADER_HEIGHT,
@@ -577,11 +609,20 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
     elevation: 5,
   },
-  directionIndicator: {
+  directionIndicatorContainer: {
     position: 'absolute',
-    height: 3,
-    width: 100,
-    backgroundColor: 'rgba(255, 255, 255, 0.8)', // Brighter indicator
+    height: 0, // Line thickness is controlled by borderWidth
+    width: 100, // Adjust length as needed
+    transformOrigin: 'left',
+    zIndex: 1000,
+  },
+  directionIndicatorDash: {
+    position: 'absolute',
+    height: 0, // Line thickness is controlled by borderWidth
+    width: 250, // Adjust length as needed
+    borderWidth: 1, // Thickness of the dashed line
+    borderColor: 'rgba(255, 255, 255, 0.25)', // Line color
+    borderStyle: 'dotted', // Make it dashed
     transformOrigin: 'left',
     zIndex: 1000,
   },
@@ -621,35 +662,47 @@ const styles = StyleSheet.create({
     backgroundColor: '#222',
     opacity: 0.5,
   },
-  debugMarker: {
-    position: 'absolute',
-    width: 4,
-    height: 4,
-    backgroundColor: '#00ff00',
-    zIndex: 99,
-  },
-  debugInfo: {
-    position: 'absolute',
-    top: 100,
-    left: 10,
+  modalContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    padding: 10,
-    borderRadius: 5,
-    zIndex: 1000,
   },
-  debugText: {
+  modalContent: {
+    backgroundColor: '#2a2a2a',
+    padding: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#444',
+  },
+  modalTitle: {
     color: '#fff',
-    fontSize: 12,
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 15,
   },
-  debugButton: {
-    backgroundColor: '#ff0000',
-    padding: 5,
-    borderRadius: 5,
-    marginTop: 5,
+  modalScore: {
+    color: '#4CAF50',
+    fontSize: 20,
+    marginBottom: 10,
   },
-  debugButtonText: {
+  modalLevel: {
+    color: '#888',
+    fontSize: 16,
+    marginBottom: 20,
+  },
+  modalButton: {
+    backgroundColor: '#4CAF50',
+    paddingHorizontal: 30,
+    paddingVertical: 12,
+    borderRadius: 25,
+    marginTop: 10,
+  },
+  modalButtonText: {
     color: '#fff',
-    fontSize: 12,
+    fontSize: 18,
+    fontWeight: 'bold',
   },
 });
 

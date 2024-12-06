@@ -1,28 +1,35 @@
 {
   "expo": {
-    "name": "BallBlaster",
-    "slug": "BallBlaster",
+    "name": "Ball Blaster",
+    "slug": "super-ball-breaker",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
-    "newArchEnabled": true,
+    "userInterfaceStyle": "dark",
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/splash.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#1a1a1a"
     },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.treyreynolds.ballblaster"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#1a1a1a"
+      },
+      "package": "com.treyreynolds.ballblaster"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "0a990b5b-9cc4-4b55-8027-9c001e86c538"
       }
     },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    }
+    "owner": "treyreynolds_personal"
   }
 }
