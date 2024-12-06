@@ -1,8 +1,8 @@
 // BallBlasterGame.tsx
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { StyleSheet, View, Dimensions, Text, TouchableOpacity, Modal, TextInput } from 'react-native';
+import { StyleSheet, View, Dimensions, Text, TouchableOpacity, Modal, Animated as RNAnimated, TextInput } from 'react-native';
 import { PanGestureHandler, GestureHandlerRootView } from 'react-native-gesture-handler';
-import Animated, { useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
+import { useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 import { PRESET_SUBJECTS, SubjectOption } from './dummyFacts';
 import StreamingText from './StreamingText';
 
@@ -92,6 +92,10 @@ const BallBlasterGame: React.FC = () => {
   const [showSubjectSelect, setShowSubjectSelect] = useState(true);
   const [currentFacts, setCurrentFacts] = useState<string[]>([]);
   const [displayedFactIndex, setDisplayedFactIndex] = useState(0);
+
+  const [isStreaming, setIsStreaming] = useState(false);
+
+  const [overlayFadeAnim] = useState(new RNAnimated.Value(1));
 
   const handleSubjectSelect = (subjectId: string) => {
     setSelectedSubject(subjectId);
@@ -297,8 +301,8 @@ const BallBlasterGame: React.FC = () => {
           newBalls[i] = { ...ball, x: newX, y: newY };
         }
 
-        // If all balls have returned, end turn
-        if (allBallsReturned && isLaunching.current) {
+        // Only end the turn if streaming is complete
+        if (allBallsReturned && isLaunching.current && !isStreaming) {
           endTurn(newBalls);
         }
 
@@ -413,11 +417,11 @@ const BallBlasterGame: React.FC = () => {
   const lastTurnHadLaunch = useRef<boolean>(false);
 
   const onGestureEnd = useCallback(() => {
-    if (!isGameActive || !touchActive.current) return;
+    if (!isGameActive || !touchActive.current || balls.some(ball => ball.launched)) return;
+    
     touchActive.current = false;
 
     const allBallsReturned = balls.every(ball => !ball.launched);
-    // Only allow launching if a turn isn't in progress and all balls are back
     if (isLaunching.current || !allBallsReturned) {
       return;
     }
@@ -428,8 +432,8 @@ const BallBlasterGame: React.FC = () => {
 
     const unlaunched = balls.filter(ball => !ball.launched);
     if (unlaunched.length > 0) {
-      // A turn is starting because we are launching balls
       lastTurnHadLaunch.current = true;
+      setIsStreaming(true); // Set streaming to true when launching
 
       launchQueue.current = unlaunched.map(ball => ({ ...ball, dx, dy }));
       isLaunching.current = true;
@@ -506,53 +510,68 @@ const BallBlasterGame: React.FC = () => {
       </View>
 
       {showSubjectSelect && (
-        <View style={styles.subjectSelectContainer}>
-          <Text style={styles.subjectTitle}>Choose a Subject to Learn About:</Text>
-          
-          {PRESET_SUBJECTS.map(subject => (
+        <View style={styles.subjectSelectionContainer}>
+          <Text style={styles.subjectSelectionTitle}>SELECT YOUR SUBJECT</Text>
+          {PRESET_SUBJECTS.map((subject) => (
             <TouchableOpacity
               key={subject.id}
-              style={styles.subjectButton}
+              style={[
+                styles.subjectButton,
+                selectedSubject === subject.id && styles.subjectButtonSelected,
+              ]}
               onPress={() => handleSubjectSelect(subject.id)}
             >
-              <Text style={styles.subjectButtonText}>{subject.name}</Text>
+              <Text
+                style={[
+                  styles.subjectButtonText,
+                  selectedSubject === subject.id && styles.subjectButtonTextSelected,
+                ]}
+              >
+                {subject.name}
+              </Text>
             </TouchableOpacity>
           ))}
-          
-          <View style={styles.customSubjectContainer}>
-            <TextInput
-              style={styles.customSubjectInput}
-              placeholder="Or enter your own subject..."
-              placeholderTextColor="#666"
-              value={customSubject}
-              onChangeText={setCustomSubject}
-            />
-            <TouchableOpacity
-              style={styles.customSubjectButton}
-              onPress={handleCustomSubject}
-            >
-              <Text style={styles.subjectButtonText}>Go</Text>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            style={styles.startButton}
+            onPress={() => setSelectedSubject(PRESET_SUBJECTS[0].id)}
+          >
+            <Text style={styles.startButtonText}>START GAME</Text>
+          </TouchableOpacity>
         </View>
       )}
 
-      {isLaunching.current && currentFacts[displayedFactIndex] && (
-        <View style={styles.cyberOverlay}>
+      {(isLaunching.current || isStreaming) && currentFacts[displayedFactIndex] && (
+        <RNAnimated.View 
+          style={[
+            styles.cyberOverlay,
+            { opacity: overlayFadeAnim }
+          ]}
+        >
           <View style={styles.factContainer}>
             <StreamingText 
               text={currentFacts[displayedFactIndex]}
               onComplete={() => {
-                // Wait a moment before showing the next fact
+                // Wait 1 second, then fade out
                 setTimeout(() => {
-                  setDisplayedFactIndex(prev => 
-                    prev < currentFacts.length - 1 ? prev + 1 : prev
-                  );
-                }, 2000);
+                  RNAnimated.timing(overlayFadeAnim, {
+                    toValue: 0,
+                    duration: 500,
+                    useNativeDriver: true,
+                  }).start(() => {
+                    setIsStreaming(false);
+                    overlayFadeAnim.setValue(1); // Reset for next timre
+                    // Update fact index after fade completes
+                    setTimeout(() => {
+                      setDisplayedFactIndex(prev => 
+                        prev < currentFacts.length - 1 ? prev + 1 : prev
+                      );
+                    }, 0);
+                  });
+                }, 1000);
               }}
             />
           </View>
-        </View>
+        </RNAnimated.View>
       )}
 
       <PanGestureHandler
@@ -565,7 +584,7 @@ const BallBlasterGame: React.FC = () => {
           {/* Direction Indicator */}
           {touchActive.current && (
             <View style={styles.directionIndicatorContainer}>
-              <Animated.View
+              <RNAnimated.View
                 style={[
                   styles.directionIndicatorDash,
                   {
@@ -689,7 +708,7 @@ const BallBlasterGame: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a1a1a',
+    backgroundColor: '#0a0a20', // Deep blue-black background
   },
   header: {
     height: HEADER_HEIGHT,
@@ -697,9 +716,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
-    backgroundColor: '#2a2a2a',
+    backgroundColor: 'rgba(41, 21, 71, 0.9)', // Purple tint
     borderBottomWidth: 2,
-    borderBottomColor: '#333',
+    borderBottomColor: '#ff2d55', // Neon pink
+    shadowColor: '#ff2d55',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.5,
+    shadowRadius: 5,
+    elevation: 8,
   },
   scoreSection: {
     alignItems: 'center',
@@ -708,40 +732,59 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   scoreLabel: {
-    color: '#888',
+    color: '#8a8aff', // Soft blue
     fontSize: 16,
     fontWeight: 'bold',
+    textShadowColor: '#8a8aff',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
   },
   scoreValue: {
     color: '#fff',
     fontSize: 28,
     fontWeight: 'bold',
+    textShadowColor: '#ff2d55',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 10,
   },
   ballLabel: {
-    color: '#888',
+    color: '#8a8aff',
     fontSize: 16,
     fontWeight: 'bold',
+    textShadowColor: '#8a8aff',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
   },
   ballValue: {
-    color: '#4CAF50',
+    color: '#00ff9f', // Neon green
     fontSize: 28,
     fontWeight: 'bold',
+    textShadowColor: '#00ff9f',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 10,
   },
   gameArea: {
     flex: 1,
-    backgroundColor: '#1a1a1a',
+    backgroundColor: '#0a0a20',
   },
   ball: {
     position: 'absolute',
     borderRadius: BALL_RADIUS,
+    backgroundColor: '#fff',
+    borderWidth: 2,
+    borderColor: '#ff2d55',
+    shadowColor: '#ff2d55',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 6,
+    elevation: 8,
     zIndex: 100,
   },
   brick: {
     position: 'absolute',
     borderRadius: 3,
-    shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
+    shadowOpacity: 0.8,
     shadowRadius: 3,
     elevation: 5,
   },
@@ -757,88 +800,139 @@ const styles = StyleSheet.create({
     height: 0,
     width: 250,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.25)',
+    borderColor: 'rgba(255, 45, 85, 0.6)', // Neon pink with transparency
     borderStyle: 'dotted',
     transformOrigin: 'left',
+    shadowColor: '#ff2d55',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 4,
     zIndex: 1000,
   },
   bottomControls: {
     height: BOTTOM_CONTROLS_HEIGHT,
-    backgroundColor: '#2a2a2a',
+    backgroundColor: 'rgba(41, 21, 71, 0.9)', // Purple tint
     borderTopWidth: 2,
-    borderTopColor: '#333',
+    borderTopColor: '#ff2d55', // Neon pink
     flexDirection: 'row',
     justifyContent: 'space-evenly',
     alignItems: 'center',
     paddingHorizontal: 10,
     paddingBottom: 20,
+    shadowColor: '#ff2d55',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.5,
+    shadowRadius: 5,
+    elevation: 8,
     zIndex: 20,
   },
   controlButton: {
-    backgroundColor: '#444',
+    backgroundColor: 'rgba(255, 45, 85, 0.2)', // Neon pink with high transparency
     paddingHorizontal: 20,
     paddingVertical: 12,
     borderRadius: 25,
     borderWidth: 1,
-    borderColor: '#666',
+    borderColor: '#ff2d55',
     minWidth: 80,
     alignItems: 'center',
+    shadowColor: '#ff2d55',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 4,
   },
   controlButtonText: {
     color: '#fff',
     fontSize: 14,
     fontWeight: 'bold',
+    textShadowColor: '#ff2d55',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
   },
   buttonPlaceholder: {
     width: 80,
     height: 42,
     borderRadius: 25,
     borderWidth: 1,
-    borderColor: '#333',
-    backgroundColor: '#222',
+    borderColor: 'rgba(255, 45, 85, 0.3)',
+    backgroundColor: 'rgba(255, 45, 85, 0.1)',
     opacity: 0.5,
   },
   modalContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backgroundColor: 'rgba(10, 10, 32, 0.9)', // Dark blue-black with transparency
   },
   modalContent: {
-    backgroundColor: '#2a2a2a',
+    backgroundColor: 'rgba(41, 21, 71, 0.95)', // Purple tint
     padding: 30,
     borderRadius: 15,
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#444',
+    borderColor: '#ff2d55',
+    shadowColor: '#ff2d55',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 10,
+    elevation: 8,
   },
   modalTitle: {
     color: '#fff',
     fontSize: 24,
     fontWeight: 'bold',
     marginBottom: 15,
+    textShadowColor: '#ff2d55',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 10,
   },
   modalScore: {
-    color: '#4CAF50',
+    color: '#00ff9f', // Neon green
     fontSize: 20,
     marginBottom: 10,
+    textShadowColor: '#00ff9f',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
   },
   modalLevel: {
-    color: '#888',
+    color: '#8a8aff',
     fontSize: 16,
     marginBottom: 20,
+    textShadowColor: '#8a8aff',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
   },
   modalButton: {
-    backgroundColor: '#4CAF50',
+    backgroundColor: 'rgba(0, 255, 159, 0.2)', // Neon green with transparency
     paddingHorizontal: 30,
     paddingVertical: 12,
     borderRadius: 25,
     marginTop: 10,
+    borderWidth: 1,
+    borderColor: '#00ff9f',
+    shadowColor: '#00ff9f',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 6,
   },
   modalButtonText: {
     color: '#fff',
     fontSize: 18,
     fontWeight: 'bold',
+    textShadowColor: '#00ff9f',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
+  },
+  cyberOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(10, 10, 32, 0.3)', // Dark blue-black with low opacity
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1000,
+    pointerEvents: 'none',
   },
   brickText: {
     position: 'absolute',
@@ -848,68 +942,77 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     lineHeight: BRICK_HEIGHT,
   },
-  subjectSelectContainer: {
-    position: 'absolute',
-    top: HEADER_HEIGHT + 20,
-    left: 20,
-    right: 20,
-    backgroundColor: '#2a2a2a',
+  subjectSelectionContainer: {
+    flex: 1,
+    backgroundColor: '#0a0a20',
     padding: 20,
-    borderRadius: 15,
-    zIndex: 1000,
-    borderWidth: 2,
-    borderColor: '#444',
+    justifyContent: 'center',
   },
-  subjectTitle: {
+  subjectSelectionTitle: {
     color: '#fff',
-    fontSize: 20,
+    fontSize: 32,
     fontWeight: 'bold',
-    marginBottom: 15,
     textAlign: 'center',
+    marginBottom: 30,
+    textShadowColor: '#ff2d55',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 10,
   },
   subjectButton: {
-    backgroundColor: '#444',
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 10,
+    backgroundColor: 'rgba(41, 21, 71, 0.9)',
+    padding: 20,
+    borderRadius: 15,
+    marginVertical: 8,
     borderWidth: 1,
-    borderColor: '#666',
+    borderColor: '#8a8aff',
+    shadowColor: '#8a8aff',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  subjectButtonSelected: {
+    backgroundColor: 'rgba(255, 45, 85, 0.2)',
+    borderColor: '#ff2d55',
+    shadowColor: '#ff2d55',
+    shadowOpacity: 0.8,
+    shadowRadius: 10,
+    elevation: 8,
   },
   subjectButtonText: {
     color: '#fff',
-    fontSize: 16,
-    textAlign: 'center',
+    fontSize: 18,
     fontWeight: 'bold',
+    textAlign: 'center',
+    textShadowColor: '#8a8aff',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 6,
   },
-  customSubjectContainer: {
-    flexDirection: 'row',
-    marginTop: 10,
+  subjectButtonTextSelected: {
+    textShadowColor: '#ff2d55',
+    textShadowRadius: 8,
   },
-  customSubjectInput: {
-    flex: 1,
-    backgroundColor: '#333',
-    padding: 10,
-    borderRadius: 10,
-    marginRight: 10,
-    color: '#fff',
+  startButton: {
+    backgroundColor: 'rgba(0, 255, 159, 0.2)',
+    padding: 20,
+    borderRadius: 25,
+    marginTop: 30,
     borderWidth: 1,
-    borderColor: '#666',
+    borderColor: '#00ff9f',
+    shadowColor: '#00ff9f',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 8,
+    elevation: 6,
   },
-  customSubjectButton: {
-    backgroundColor: '#4CAF50',
-    padding: 10,
-    borderRadius: 10,
-    justifyContent: 'center',
-    minWidth: 50,
-  },
-  cyberOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    zIndex: 500,
+  startButtonText: {
+    color: '#fff',
+    fontSize: 24,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    textShadowColor: '#00ff9f',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
   },
   factContainer: {
     position: 'absolute',

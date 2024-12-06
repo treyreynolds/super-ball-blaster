@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Text, Animated, StyleSheet } from 'react-native';
+import { Text, Animated, StyleSheet, View } from 'react-native';
 
 interface StreamingTextProps {
   text: string;
@@ -9,30 +9,20 @@ interface StreamingTextProps {
 const StreamingText: React.FC<StreamingTextProps> = ({ text, onComplete }) => {
   const [displayedText, setDisplayedText] = useState('');
   const [currentIndex, setCurrentIndex] = useState(0);
-  const fadeAnim = new Animated.Value(0);
 
   useEffect(() => {
     // Reset when text changes
     setDisplayedText('');
     setCurrentIndex(0);
-    fadeAnim.setValue(0);
   }, [text]);
 
   useEffect(() => {
     if (currentIndex < text.length) {
-      // Vary the speed slightly for a more natural feel
-      const speed = 30 + Math.random() * 20; // 30-50ms per character
+      const speed = 30 + Math.random() * 20;
       
       const timeout = setTimeout(() => {
         setDisplayedText(prev => prev + text[currentIndex]);
         setCurrentIndex(i => i + 1);
-        
-        // Fade in each character
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 200,
-          useNativeDriver: true,
-        }).start();
       }, speed);
 
       return () => clearTimeout(timeout);
@@ -42,12 +32,12 @@ const StreamingText: React.FC<StreamingTextProps> = ({ text, onComplete }) => {
   }, [currentIndex, text]);
 
   return (
-    <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
+    <View style={styles.container}>
       <Text style={styles.text}>
         {displayedText}
         <Text style={styles.cursor}>|</Text>
       </Text>
-    </Animated.View>
+    </View>
   );
 };
 
