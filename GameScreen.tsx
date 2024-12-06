@@ -1,14 +1,16 @@
 // BallBlasterGame.tsx
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { StyleSheet, View, Dimensions, Text, TouchableOpacity, Modal } from 'react-native';
+import { StyleSheet, View, Dimensions, Text, TouchableOpacity, Modal, TextInput } from 'react-native';
 import { PanGestureHandler, GestureHandlerRootView } from 'react-native-gesture-handler';
 import Animated, { useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
+import { PRESET_SUBJECTS, SubjectOption } from './dummyFacts';
+import StreamingText from './StreamingText';
 
 const { width, height } = Dimensions.get('window');
 
 // ----------------- CONSTANTS & TYPES -----------------
 const BALL_RADIUS = 6;
-const BALL_SPEED_PER_SEC = 720; // Approx. 12 px/frame at 60fps -> now consistent with deltaTime
+const BALL_SPEED_PER_SEC = 360; // Approx. 12 px/frame at 60fps -> now consistent with deltaTime
 const LAUNCH_DELAY = 150;       // ms delay between launching balls
 const BRICK_MARGIN = 3;
 const INITIAL_BRICK_ROWS = 4;
@@ -52,17 +54,17 @@ type BrickType = {
 };
 
 const BRICK_TYPES: BrickType[] = [
-  { color: '#4CAF50', points: 1, hits: 1, probability: 0.6 },
-  { color: '#2196F3', points: 2, hits: 2, probability: 0.25 },
-  { color: '#FFC107', points: 3, hits: 1, probability: 0.1 },
-  { color: '#9C27B0', points: 5, hits: 3, probability: 0.05 },
+  { color: '#4CAF50', points: 1, hits: 1, probability: 0.3 },  // Light green
+  { color: '#2196F3', points: 2, hits: 2, probability: 0.25 }, // Blue
+  { color: '#9C27B0', points: 3, hits: 3, probability: 0.2 },  // Purple
+  { color: '#FF5722', points: 4, hits: 4, probability: 0.15 }, // Deep Orange
+  { color: '#F44336', points: 5, hits: 5, probability: 0.1 },  // Red
 ];
 
 interface GameState {
   level: number;
   gameStatus: 'playing' | 'won' | 'lost';
 }
-
 
 // ----------------- MAIN COMPONENT -----------------
 const BallBlasterGame: React.FC = () => {
@@ -85,6 +87,34 @@ const BallBlasterGame: React.FC = () => {
   const touchActive = useRef<boolean>(false);
   const launchAngle = useSharedValue(0);
 
+  const [selectedSubject, setSelectedSubject] = useState<string>('');
+  const [customSubject, setCustomSubject] = useState<string>('');
+  const [showSubjectSelect, setShowSubjectSelect] = useState(true);
+  const [currentFacts, setCurrentFacts] = useState<string[]>([]);
+  const [displayedFactIndex, setDisplayedFactIndex] = useState(0);
+
+  const handleSubjectSelect = (subjectId: string) => {
+    setSelectedSubject(subjectId);
+    const subject = PRESET_SUBJECTS.find(s => s.id === subjectId);
+    if (subject) {
+      setCurrentFacts(subject.dummyFacts);
+    }
+    setShowSubjectSelect(false);
+  };
+
+  // Add function to handle custom subject
+  const handleCustomSubject = () => {
+    if (customSubject.trim()) {
+      setSelectedSubject('custom');
+      setCurrentFacts([
+        `Custom fact about ${customSubject} #1`,
+        `Custom fact about ${customSubject} #2`,
+        `Custom fact about ${customSubject} #3`,
+      ]);
+      setShowSubjectSelect(false);
+    }
+  };
+
   // ----------------- EFFECTS -----------------
   useEffect(() => {
     initializeGame();
@@ -93,6 +123,11 @@ const BallBlasterGame: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    if (isLaunching.current && currentFacts.length > 0) {
+      return () => {};
+    }
+  }, [isLaunching.current, currentFacts]);
 
   // ----------------- GAME INITIALIZATION -----------------
   const getBrickRowsForLevel = (level: number) => {
@@ -137,13 +172,20 @@ const BallBlasterGame: React.FC = () => {
     const initialBricks: Brick[] = [];
     let brickId = 0;
 
+    // Increase max hits based on level
+    const levelBonus = Math.floor((level - 1) / 3); // Every 3 levels increase max hits
+    const adjustedTypes = BRICK_TYPES.map(type => ({
+      ...type,
+      hits: Math.min(type.hits + levelBonus, 9), // Cap at 9 hits
+      probability: type.probability * (1 + levelBonus * 0.1) // Increase probability of harder bricks
+    }));
+
     for (let row = 0; row < rowsForLevel; row++) {
       for (let col = 0; col < BRICK_COLS; col++) {
-        // As level increases, fewer gaps
         const gapProbability = Math.max(0.1, 0.3 - (level * 0.05));
         if (Math.random() < gapProbability) continue;
 
-        const selectedType = selectBrickType();
+        const selectedType = selectBrickType(adjustedTypes);
         initialBricks.push({
           id: brickId++,
           x: col * (BRICK_WIDTH + BRICK_MARGIN) + BRICK_MARGIN,
@@ -151,7 +193,7 @@ const BallBlasterGame: React.FC = () => {
           width: BRICK_WIDTH,
           height: BRICK_HEIGHT,
           visible: true,
-          special: selectedType === BRICK_TYPES[2],
+          special: false,
           hits: selectedType.hits,
           color: selectedType.color,
           points: selectedType.points
@@ -161,16 +203,16 @@ const BallBlasterGame: React.FC = () => {
     return initialBricks;
   };
 
-  const selectBrickType = () => {
+  const selectBrickType = (types = BRICK_TYPES) => {
     const rand = Math.random();
     let cumProb = 0;
-    for (const type of BRICK_TYPES) {
+    for (const type of types) {
       cumProb += type.probability;
       if (rand < cumProb) {
         return type;
       }
     }
-    return BRICK_TYPES[0];
+    return types[0];
   };
 
   // ----------------- GAME LOOP -----------------
@@ -463,6 +505,56 @@ const BallBlasterGame: React.FC = () => {
         </View>
       </View>
 
+      {showSubjectSelect && (
+        <View style={styles.subjectSelectContainer}>
+          <Text style={styles.subjectTitle}>Choose a Subject to Learn About:</Text>
+          
+          {PRESET_SUBJECTS.map(subject => (
+            <TouchableOpacity
+              key={subject.id}
+              style={styles.subjectButton}
+              onPress={() => handleSubjectSelect(subject.id)}
+            >
+              <Text style={styles.subjectButtonText}>{subject.name}</Text>
+            </TouchableOpacity>
+          ))}
+          
+          <View style={styles.customSubjectContainer}>
+            <TextInput
+              style={styles.customSubjectInput}
+              placeholder="Or enter your own subject..."
+              placeholderTextColor="#666"
+              value={customSubject}
+              onChangeText={setCustomSubject}
+            />
+            <TouchableOpacity
+              style={styles.customSubjectButton}
+              onPress={handleCustomSubject}
+            >
+              <Text style={styles.subjectButtonText}>Go</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {isLaunching.current && currentFacts[displayedFactIndex] && (
+        <View style={styles.cyberOverlay}>
+          <View style={styles.factContainer}>
+            <StreamingText 
+              text={currentFacts[displayedFactIndex]}
+              onComplete={() => {
+                // Wait a moment before showing the next fact
+                setTimeout(() => {
+                  setDisplayedFactIndex(prev => 
+                    prev < currentFacts.length - 1 ? prev + 1 : prev
+                  );
+                }, 2000);
+              }}
+            />
+          </View>
+        </View>
+      )}
+
       <PanGestureHandler
         onGestureEvent={onGestureEvent}
         onEnded={onGestureEnd}
@@ -500,10 +592,17 @@ const BallBlasterGame: React.FC = () => {
                     width: brick.width,
                     height: brick.height,
                     backgroundColor: brick.color,
-                    opacity: brick.hits < BRICK_TYPES[3].hits ? 0.8 : 1,
+                    opacity: 1,
                   },
                 ]}
-              />
+              >
+                <Text style={[styles.brickText, { 
+                  color: brick.hits >= 4 ? '#fff' : '#000',
+                  opacity: brick.hits >= 4 ? 1 : 0.8,
+                }]}>
+                  {brick.hits}
+                </Text>
+              </View>
             )
           )}
 
@@ -740,6 +839,95 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 18,
     fontWeight: 'bold',
+  },
+  brickText: {
+    position: 'absolute',
+    width: '100%',
+    textAlign: 'center',
+    fontSize: 14,
+    fontWeight: 'bold',
+    lineHeight: BRICK_HEIGHT,
+  },
+  subjectSelectContainer: {
+    position: 'absolute',
+    top: HEADER_HEIGHT + 20,
+    left: 20,
+    right: 20,
+    backgroundColor: '#2a2a2a',
+    padding: 20,
+    borderRadius: 15,
+    zIndex: 1000,
+    borderWidth: 2,
+    borderColor: '#444',
+  },
+  subjectTitle: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 15,
+    textAlign: 'center',
+  },
+  subjectButton: {
+    backgroundColor: '#444',
+    padding: 15,
+    borderRadius: 10,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#666',
+  },
+  subjectButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    textAlign: 'center',
+    fontWeight: 'bold',
+  },
+  customSubjectContainer: {
+    flexDirection: 'row',
+    marginTop: 10,
+  },
+  customSubjectInput: {
+    flex: 1,
+    backgroundColor: '#333',
+    padding: 10,
+    borderRadius: 10,
+    marginRight: 10,
+    color: '#fff',
+    borderWidth: 1,
+    borderColor: '#666',
+  },
+  customSubjectButton: {
+    backgroundColor: '#4CAF50',
+    padding: 10,
+    borderRadius: 10,
+    justifyContent: 'center',
+    minWidth: 50,
+  },
+  cyberOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    zIndex: 500,
+  },
+  factContainer: {
+    position: 'absolute',
+    top: HEADER_HEIGHT + 20,
+    left: 20,
+    right: 20,
+    backgroundColor: 'rgba(0, 20, 0, 0.8)',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#00ff00',
+    shadowColor: '#00ff00',
+    shadowOffset: {
+      width: 0,
+      height: 0,
+    },
+    shadowOpacity: 0.5,
+    shadowRadius: 10,
+    elevation: 5,
   },
 });
 
