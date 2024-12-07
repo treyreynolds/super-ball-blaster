@@ -9,8 +9,8 @@ import StreamingText from './StreamingText';
 const { width, height } = Dimensions.get('window');
 
 // ----------------- CONSTANTS & TYPES -----------------
-const BALL_RADIUS = 6;
-const BALL_SPEED_PER_SEC = 360; // Approx. 12 px/frame at 60fps -> now consistent with deltaTime
+const BALL_RADIUS = 8;
+const BALL_SPEED_PER_SEC = 600; // Approx. 12 px/frame at 60fps -> now consistent with deltaTime
 const LAUNCH_DELAY = 150;       // ms delay between launching balls
 const BRICK_MARGIN = 3;
 const INITIAL_BRICK_ROWS = 4;
@@ -40,10 +40,10 @@ interface Brick {
   width: number;
   height: number;
   visible: boolean;
-  special: boolean;
   hits: number;
   color: string;
   points: number;
+  givesBall?: boolean;
 }
 
 type BrickType = {
@@ -51,14 +51,14 @@ type BrickType = {
   points: number;
   hits: number;
   probability: number;
+  givesBall?: boolean;
 };
 
 const BRICK_TYPES: BrickType[] = [
-  { color: '#4CAF50', points: 1, hits: 1, probability: 0.3 },  // Light green
-  { color: '#2196F3', points: 2, hits: 2, probability: 0.25 }, // Blue
-  { color: '#9C27B0', points: 3, hits: 3, probability: 0.2 },  // Purple
-  { color: '#FF5722', points: 4, hits: 4, probability: 0.15 }, // Deep Orange
-  { color: '#F44336', points: 5, hits: 5, probability: 0.1 },  // Red
+  { color: '#4CAF50', points: 1, hits: 1, probability: 0.6 },    // Common green
+  { color: '#2196F3', points: 2, hits: 2, probability: 0.25 },   // Blue
+  { color: '#FFC107', points: 1, hits: 1, probability: 0.1, givesBall: true },   // Special yellow
+  { color: '#9C27B0', points: 5, hits: 3, probability: 0.05 },   // Rare purple
 ];
 
 interface GameState {
@@ -161,35 +161,29 @@ const BallBlasterGame: React.FC = () => {
       launched: false
     }));
   
-    const initialBricks: Brick[] = generateBricksForLevel(level);
-  
-    setBalls(initialBalls);
-    setBricks(initialBricks);
-    setGameState({ level, gameStatus: 'playing' });
-    
-    // Restart the game loop
-    startGameLoop();
-  }, [ballCount]);
-
-  const generateBricksForLevel = (level: number): Brick[] => {
-    const rowsForLevel = getBrickRowsForLevel(level);
+    // Initialize bricks with random types and gaps
     const initialBricks: Brick[] = [];
     let brickId = 0;
-
-    // Increase max hits based on level
-    const levelBonus = Math.floor((level - 1) / 3); // Every 3 levels increase max hits
-    const adjustedTypes = BRICK_TYPES.map(type => ({
-      ...type,
-      hits: Math.min(type.hits + levelBonus, 9), // Cap at 9 hits
-      probability: type.probability * (1 + levelBonus * 0.1) // Increase probability of harder bricks
-    }));
+    const rowsForLevel = getBrickRowsForLevel(level);
 
     for (let row = 0; row < rowsForLevel; row++) {
       for (let col = 0; col < BRICK_COLS; col++) {
+        // Reduce gap probability as levels increase
         const gapProbability = Math.max(0.1, 0.3 - (level * 0.05));
         if (Math.random() < gapProbability) continue;
 
-        const selectedType = selectBrickType(adjustedTypes);
+        const rand = Math.random();
+        let cumProb = 0;
+        let selectedType = BRICK_TYPES[0];
+        
+        for (const type of BRICK_TYPES) {
+          cumProb += type.probability;
+          if (rand < cumProb) {
+            selectedType = type;
+            break;
+          }
+        }
+
         initialBricks.push({
           id: brickId++,
           x: col * (BRICK_WIDTH + BRICK_MARGIN) + BRICK_MARGIN,
@@ -197,27 +191,21 @@ const BallBlasterGame: React.FC = () => {
           width: BRICK_WIDTH,
           height: BRICK_HEIGHT,
           visible: true,
-          special: false,
           hits: selectedType.hits,
           color: selectedType.color,
-          points: selectedType.points
+          points: selectedType.points,
+          givesBall: selectedType.givesBall
         });
       }
     }
-    return initialBricks;
-  };
 
-  const selectBrickType = (types = BRICK_TYPES) => {
-    const rand = Math.random();
-    let cumProb = 0;
-    for (const type of types) {
-      cumProb += type.probability;
-      if (rand < cumProb) {
-        return type;
-      }
-    }
-    return types[0];
-  };
+    setBricks(initialBricks);
+    setBalls(initialBalls);
+    setGameState({ level, gameStatus: 'playing' });
+    
+    // Restart the game loop
+    startGameLoop();
+  }, [ballCount]);
 
   // ----------------- GAME LOOP -----------------
   const startGameLoop = useCallback(() => {
@@ -290,7 +278,7 @@ const BallBlasterGame: React.FC = () => {
               brick.visible = false;
               bricksUpdated = true;
               setScore(prev => prev + brick.points);
-              if (brick.special) {
+              if (brick.givesBall) {
                 setBallCount(prev => prev + 1);
               }
             }
