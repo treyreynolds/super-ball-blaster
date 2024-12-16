@@ -1,40 +1,53 @@
-// BallBlasterGame.tsx
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { StyleSheet, View, Dimensions, Text, TouchableOpacity, Modal, Animated as RNAnimated, TextInput } from 'react-native';
+import { StyleSheet, View, Dimensions, Text, TouchableOpacity, Modal, Animated as RNAnimated } from 'react-native';
 import { PanGestureHandler, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
-import { PRESET_SUBJECTS, SubjectOption } from './dummyFacts';
-import StreamingText from './StreamingText';
-
-const { width, height } = Dimensions.get('window');
+import levelsData from './levels.json';
 
 // ----------------- CONSTANTS & TYPES -----------------
-const BALL_RADIUS = 8;
-const BALL_SPEED_PER_SEC = 600; // Approx. 12 px/frame at 60fps -> now consistent with deltaTime
-const LAUNCH_DELAY = 150;       // ms delay between launching balls
-const BRICK_MARGIN = 3;
-const INITIAL_BRICK_ROWS = 4;
-const BRICK_COLS = 8;
-const HEADER_HEIGHT = 80;
-const BOTTOM_CONTROLS_HEIGHT = 80;
-const BRICK_WIDTH = (width - (BRICK_COLS + 1) * BRICK_MARGIN) / BRICK_COLS;
-const BRICK_HEIGHT = 25;
-const LAUNCH_Y = height - BOTTOM_CONTROLS_HEIGHT - 100;
-const INITIAL_LAUNCH_X = width / 2;
-const BRICK_DROP_AMOUNT = 40;
-const LOSS_LINE = LAUNCH_Y - BRICK_HEIGHT * 2;
+const DESIGN_WIDTH = 320;
+const DESIGN_HEIGHT = 480;
+
+const { width: deviceWidth, height: deviceHeight } = Dimensions.get('window');
+
+// Maintain aspect ratio for the game area
+let gameAreaWidth = deviceWidth;
+let gameAreaHeight = (deviceWidth / DESIGN_WIDTH) * DESIGN_HEIGHT;
+if (gameAreaHeight > deviceHeight) {
+  gameAreaHeight = deviceHeight;
+  gameAreaWidth = (deviceHeight / DESIGN_HEIGHT) * DESIGN_WIDTH;
+}
+
+// Scale factor based on our design
+const scaleX = gameAreaWidth / DESIGN_WIDTH;
+const scaleY = gameAreaHeight / DESIGN_HEIGHT;
+// If you want uniform scaling, choose the smaller one so everything fits.
+const scale = Math.min(scaleX, scaleY);
+
+// Define some scaled constants based on the design space
+const BALL_RADIUS = 4 * scale;
+const BALL_SPEED_PER_SEC = 600 * scale;
+const LAUNCH_DELAY = 150; // ms
+const BRICK_MARGIN = 2 * scale;
+const HEADER_HEIGHT = 60 * scale;
+const BOTTOM_CONTROLS_HEIGHT = 60 * scale;
+const LAUNCH_Y = deviceHeight - BOTTOM_CONTROLS_HEIGHT - (BALL_RADIUS * 2) - 100;
+const INITIAL_LAUNCH_X = deviceWidth / 2;
+const BRICK_DROP_AMOUNT = 40 * scale;
+const LOSS_LINE = deviceHeight - BOTTOM_CONTROLS_HEIGHT - (deviceHeight * 0.3);
 
 interface Ball {
   id: number;
   x: number;
   y: number;
-  dx: number;   // Velocity in x (px/s)
-  dy: number;   // Velocity in y (px/s)
+  dx: number;
+  dy: number;
   launched: boolean;
 }
 
 interface Brick {
   id: number;
+  shape: 'sqr' | 'tr1' | 'tr2' | 'tr3' | 'tr4' | 'circle' | 'bla';
   x: number;
   y: number;
   width: number;
@@ -46,29 +59,12 @@ interface Brick {
   givesBall?: boolean;
 }
 
-type BrickType = {
-  color: string;
-  points: number;
-  hits: number;
-  probability: number;
-  givesBall?: boolean;
-};
-
-const BRICK_TYPES: BrickType[] = [
-  { color: '#4CAF50', points: 1, hits: 1, probability: 0.6 },    // Common green
-  { color: '#2196F3', points: 2, hits: 2, probability: 0.25 },   // Blue
-  { color: '#FFC107', points: 1, hits: 1, probability: 0.1, givesBall: true },   // Special yellow
-  { color: '#9C27B0', points: 5, hits: 3, probability: 0.05 },   // Rare purple
-];
-
 interface GameState {
   level: number;
   gameStatus: 'playing' | 'won' | 'lost';
 }
 
-// ----------------- MAIN COMPONENT -----------------
 const BallBlasterGame: React.FC = () => {
-  // ----------------- REFS & STATE -----------------
   const gameLoop = useRef<number | null>(null);
   const lastFrameTime = useRef<number>(0);
 
@@ -87,71 +83,25 @@ const BallBlasterGame: React.FC = () => {
   const touchActive = useRef<boolean>(false);
   const launchAngle = useSharedValue(0);
 
-  const [selectedSubject, setSelectedSubject] = useState<string>('');
-  const [customSubject, setCustomSubject] = useState<string>('');
-  const [showSubjectSelect, setShowSubjectSelect] = useState(true);
-  const [currentFacts, setCurrentFacts] = useState<string[]>([]);
-  const [displayedFactIndex, setDisplayedFactIndex] = useState(0);
-
-  const [isStreaming, setIsStreaming] = useState(false);
-
-  const [overlayFadeAnim] = useState(new RNAnimated.Value(1));
-
-  const handleSubjectSelect = (subjectId: string) => {
-    setSelectedSubject(subjectId);
-    const subject = PRESET_SUBJECTS.find(s => s.id === subjectId);
-    if (subject) {
-      setCurrentFacts(subject.dummyFacts);
-    }
-    setShowSubjectSelect(false);
-  };
-
-  // Add function to handle custom subject
-  const handleCustomSubject = () => {
-    if (customSubject.trim()) {
-      setSelectedSubject('custom');
-      setCurrentFacts([
-        `Custom fact about ${customSubject} #1`,
-        `Custom fact about ${customSubject} #2`,
-        `Custom fact about ${customSubject} #3`,
-      ]);
-      setShowSubjectSelect(false);
-    }
-  };
-
-  // ----------------- EFFECTS -----------------
   useEffect(() => {
-    initializeGame();
+    initializeGame(1);
     return () => {
       if (gameLoop.current) cancelAnimationFrame(gameLoop.current);
     };
   }, []);
 
-  useEffect(() => {
-    if (isLaunching.current && currentFacts.length > 0) {
-      return () => {};
-    }
-  }, [isLaunching.current, currentFacts]);
-
-  // ----------------- GAME INITIALIZATION -----------------
-  const getBrickRowsForLevel = (level: number) => {
-    return INITIAL_BRICK_ROWS + Math.floor(level / 2);
-  };
-
-  const initializeGame = useCallback((level: number = 1) => {
-    // Reset turn and launching states
+  const initializeGame = useCallback((level: number) => {
     isLaunching.current = false;
     lastTurnHadLaunch.current = false;
     launchQueue.current = [];
-    lastFrameTime.current = 0; // Resetting frame time reference
+    lastFrameTime.current = 0;
     if (gameLoop.current) {
       cancelAnimationFrame(gameLoop.current);
       gameLoop.current = null;
     }
-  
-    // Reset ball position and state
+
     lastBallX.current = INITIAL_LAUNCH_X;
-  
+
     const initialBalls: Ball[] = Array.from({ length: ballCount }, (_, i) => ({
       id: i,
       x: INITIAL_LAUNCH_X,
@@ -160,54 +110,52 @@ const BallBlasterGame: React.FC = () => {
       dy: 0,
       launched: false
     }));
-  
-    // Initialize bricks with random types and gaps
-    const initialBricks: Brick[] = [];
+
+    // Load level data from JSON
+    const levelData = levelsData.levels[level - 1];
+    if (!levelData) {
+      setGameState({ level, gameStatus: 'won' });
+      return;
+    }
+
+    const rows = levelData.rows;
+    const maxRowLength = Math.max(...rows.map(r => r.length));
+    // Compute brick size based on the design width and margin
+    const designBrickWidth = (DESIGN_WIDTH - (maxRowLength + 1) * 3) / maxRowLength;
+    const designBrickHeight = 25;
+
+    const brickWidth = designBrickWidth * scale;
+    const brickHeight = designBrickHeight * scale;
+
     let brickId = 0;
-    const rowsForLevel = getBrickRowsForLevel(level);
+    const initialBricks: Brick[] = [];
 
-    for (let row = 0; row < rowsForLevel; row++) {
-      for (let col = 0; col < BRICK_COLS; col++) {
-        // Reduce gap probability as levels increase
-        const gapProbability = Math.max(0.1, 0.3 - (level * 0.05));
-        if (Math.random() < gapProbability) continue;
-
-        const rand = Math.random();
-        let cumProb = 0;
-        let selectedType = BRICK_TYPES[0];
-        
-        for (const type of BRICK_TYPES) {
-          cumProb += type.probability;
-          if (rand < cumProb) {
-            selectedType = type;
-            break;
-          }
-        }
-
+    rows.forEach((rowBricks, rowIndex) => {
+      rowBricks.forEach((brickDef, colIndex) => {
+        const x = (colIndex * (brickWidth + BRICK_MARGIN) + BRICK_MARGIN);
+        const y = (rowIndex * (brickHeight + BRICK_MARGIN) + HEADER_HEIGHT);
         initialBricks.push({
           id: brickId++,
-          x: col * (BRICK_WIDTH + BRICK_MARGIN) + BRICK_MARGIN,
-          y: row * (BRICK_HEIGHT + BRICK_MARGIN) + HEADER_HEIGHT,
-          width: BRICK_WIDTH,
-          height: BRICK_HEIGHT,
+          shape: brickDef.shape || 'square',
+          x,
+          y,
+          width: brickWidth,
+          height: brickHeight,
           visible: true,
-          hits: selectedType.hits,
-          color: selectedType.color,
-          points: selectedType.points,
-          givesBall: selectedType.givesBall
+          hits: brickDef.hits,
+          color: brickDef.color,
+          points: brickDef.points,
+          givesBall: brickDef.givesBall
         });
-      }
-    }
+      });
+    });
 
     setBricks(initialBricks);
     setBalls(initialBalls);
     setGameState({ level, gameStatus: 'playing' });
-    
-    // Restart the game loop
     startGameLoop();
   }, [ballCount]);
 
-  // ----------------- GAME LOOP -----------------
   const startGameLoop = useCallback(() => {
     const updateGame = (timestamp: number) => {
       if (!lastFrameTime.current) lastFrameTime.current = timestamp;
@@ -223,7 +171,6 @@ const BallBlasterGame: React.FC = () => {
     gameLoop.current = requestAnimationFrame(updateGame);
   }, []);
 
-  // Handle launching balls in queue
   const handleQueuedLaunches = (timestamp: number) => {
     if (isLaunching.current && launchQueue.current.length > 0) {
       const currentTime = timestamp;
@@ -244,7 +191,6 @@ const BallBlasterGame: React.FC = () => {
     }
   };
 
-  // Update balls and handle collisions with walls and bricks
   const updateBallsAndBricks = (deltaTime: number) => {
     const deltaSec = deltaTime / 1000;
 
@@ -263,14 +209,12 @@ const BallBlasterGame: React.FC = () => {
 
           const { newX, newY, collidedWithBrick, brickIndex } = updateBallPosition(ball, deltaSec, updatedBricks);
 
-          // If ball returned to bottom
-          if (newY + BALL_RADIUS >= height - BOTTOM_CONTROLS_HEIGHT) {
+          if (newY >= LAUNCH_Y) {
             lastBallX.current = newX;
-            newBalls[i] = { ...ball, x: lastBallX.current, y: LAUNCH_Y, launched: false };
+            newBalls[i] = { ...ball, x: newX, y: LAUNCH_Y, launched: false };
             continue;
           }
 
-          // Update brick if collision occurred
           if (collidedWithBrick && brickIndex !== null && updatedBricks[brickIndex]) {
             const brick = updatedBricks[brickIndex];
             brick.hits--;
@@ -285,12 +229,10 @@ const BallBlasterGame: React.FC = () => {
             updatedBricks[brickIndex] = brick;
           }
 
-          // Update ball position
           newBalls[i] = { ...ball, x: newX, y: newY };
         }
 
-        // Only end the turn if streaming is complete
-        if (allBallsReturned && isLaunching.current && !isStreaming) {
+        if (allBallsReturned && isLaunching.current) {
           endTurn(newBalls);
         }
 
@@ -314,24 +256,28 @@ const BallBlasterGame: React.FC = () => {
     deltaSec: number,
     updatedBricks: Brick[]
   ): { newX: number; newY: number; collidedWithBrick: boolean; brickIndex: number | null } => {
-    // Apply velocity with deltaTime for consistent movement speed
     let newX = ball.x + ball.dx * deltaSec;
     let newY = ball.y + ball.dy * deltaSec;
 
-    // Collision with walls
-    if (newX - BALL_RADIUS <= 0 || newX + BALL_RADIUS >= width) {
+    // Walls
+    if (newX - BALL_RADIUS <= 0 || newX + BALL_RADIUS >= deviceWidth) {
       const newDx = -ball.dx;
       newX = ball.x + newDx * deltaSec;
       ball.dx = newDx;
     }
 
-    if (newY - BALL_RADIUS <= 0) {
+    if (newY - BALL_RADIUS <= HEADER_HEIGHT) {
       const newDy = -ball.dy;
       newY = ball.y + newDy * deltaSec;
       ball.dy = newDy;
     }
 
-    // Check brick collision
+    // Bottom return check
+    if (newY >= LAUNCH_Y) {
+      return { newX, newY: LAUNCH_Y, collidedWithBrick: false, brickIndex: null };
+    }
+
+    // Bricks
     let collidedWithBrick = false;
     let brickIndex: number | null = null;
     for (let j = 0; j < updatedBricks.length && !collidedWithBrick; j++) {
@@ -344,14 +290,12 @@ const BallBlasterGame: React.FC = () => {
         newY + BALL_RADIUS > brick.y &&
         newY - BALL_RADIUS < brick.y + brick.height
       ) {
-        // Determine collision side
         const fromLeft = Math.abs((newX + BALL_RADIUS) - brick.x);
         const fromRight = Math.abs((newX - BALL_RADIUS) - (brick.x + brick.width));
         const fromTop = Math.abs((newY + BALL_RADIUS) - brick.y);
         const fromBottom = Math.abs((newY - BALL_RADIUS) - (brick.y + brick.height));
         const minOverlap = Math.min(fromLeft, fromRight, fromTop, fromBottom);
 
-        // Bounce direction
         if (minOverlap === fromLeft || minOverlap === fromRight) {
           ball.dx = -ball.dx;
           newX = ball.x + ball.dx * deltaSec;
@@ -368,7 +312,6 @@ const BallBlasterGame: React.FC = () => {
     return { newX, newY, collidedWithBrick, brickIndex };
   };
 
-  // Recall all balls
   const recallBalls = useCallback(() => {
     setBalls(prev => prev.map(ball => ({
       ...ball,
@@ -382,22 +325,16 @@ const BallBlasterGame: React.FC = () => {
     launchQueue.current = [];
   }, []);
 
-  // ----------------- TOUCH & GESTURE HANDLERS -----------------
   const onGestureEvent = useCallback((event: any) => {
     if (!isGameActive) return;
-
     const touchX = event.nativeEvent.x;
     const touchY = event.nativeEvent.y;
 
-    // Calculate angle from launcher position to touch
     const dx = touchX - lastBallX.current;
-    const dy = (touchY - LAUNCH_Y);
+    const dy = touchY - LAUNCH_Y;
     let angle = Math.atan2(dy, dx);
-
-    // Limit angle to a forward/upward range
-    const maxAngle = Math.PI; // adjust if you want narrower angles
+    const maxAngle = Math.PI;
     angle = Math.max(-maxAngle, Math.min(maxAngle, angle));
-
     launchAngle.value = angle;
     touchActive.current = true;
   }, [isGameActive]);
@@ -406,7 +343,6 @@ const BallBlasterGame: React.FC = () => {
 
   const onGestureEnd = useCallback(() => {
     if (!isGameActive || !touchActive.current || balls.some(ball => ball.launched)) return;
-    
     touchActive.current = false;
 
     const allBallsReturned = balls.every(ball => !ball.launched);
@@ -421,33 +357,28 @@ const BallBlasterGame: React.FC = () => {
     const unlaunched = balls.filter(ball => !ball.launched);
     if (unlaunched.length > 0) {
       lastTurnHadLaunch.current = true;
-      setIsStreaming(true); // Set streaming to true when launching
-
       launchQueue.current = unlaunched.map(ball => ({ ...ball, dx, dy }));
       isLaunching.current = true;
       lastLaunchTime.current = performance.now() - LAUNCH_DELAY;
     }
   }, [balls, isGameActive]);
 
-  // ----------------- CHECK TURN END & LEVEL PROGRESSION -----------------
   useEffect(() => {
     if (gameState.gameStatus !== 'playing') return;
 
     const allBallsReturned = balls.every(ball => !ball.launched);
     const visibleBricks = bricks.filter(brick => brick.visible);
 
-    // Only do end-of-turn logic if a turn actually occurred
     if (allBallsReturned && !isLaunching.current && lastTurnHadLaunch.current) {
-      // Reset the turn flag
       lastTurnHadLaunch.current = false;
 
-      // Check if player cleared the level
+      // Check win
       if (bricks.length > 0 && visibleBricks.length === 0) {
         setGameState(prev => ({ ...prev, gameStatus: 'won' }));
         return;
       }
 
-      // Move bricks down if any are still visible
+      // Move bricks down
       if (visibleBricks.length > 0) {
         setBricks(prevBricks => {
           const newBricks = prevBricks.map(brick => ({
@@ -455,7 +386,6 @@ const BallBlasterGame: React.FC = () => {
             y: brick.y + BRICK_DROP_AMOUNT
           }));
 
-          // Check for loss condition
           if (newBricks.some(b => b.visible && b.y > LOSS_LINE)) {
             setGameState(prev => ({ ...prev, gameStatus: 'lost' }));
           }
@@ -465,7 +395,6 @@ const BallBlasterGame: React.FC = () => {
     }
   }, [gameState.gameStatus, isLaunching.current, balls, bricks]);
 
-  // ----------------- LEVEL & GAME RESETS -----------------
   const startNextLevel = () => {
     initializeGame(gameState.level + 1);
   };
@@ -474,7 +403,6 @@ const BallBlasterGame: React.FC = () => {
     initializeGame(1);
   };
 
-  // ----------------- ANIMATED STYLES -----------------
   const indicatorStyle = useAnimatedStyle(() => ({
     transform: [{ rotate: `${launchAngle.value}rad` }]
   }));
@@ -482,7 +410,121 @@ const BallBlasterGame: React.FC = () => {
   const allBallsReturned = balls.every(ball => !ball.launched);
   const canLaunch = isGameActive && !isLaunching.current && allBallsReturned;
 
-  // ----------------- RENDER -----------------
+  const renderBrick = (brick: Brick) => {
+    if (!brick.visible) return null;
+
+    // For a right triangle (diagonal cut):
+    // We'll create a diagonal right-angled triangle from top-left corner to bottom-right corner.
+    // This uses border trick:
+    // - borderRightWidth = brick.width
+    // - borderBottomWidth = brick.height
+    // - one color on bottom, transparent on right
+    // This makes a right-angled triangle with right angle at top-left.
+
+    return (
+      <View
+        key={brick.id}
+        style={{
+          position: 'absolute',
+          left: brick.x,
+          top: brick.y,
+          width: brick.width,
+          height: brick.height
+        }}
+      >
+        {brick.shape === 'sqr' ? (
+          <View style={{ flex: 1, backgroundColor: brick.color, justifyContent: 'center', alignItems: 'center' }}>
+            <Text style={styles.brickText}>{brick.hits}</Text>
+          </View>
+        ) : brick.shape === 'tr1' ? (
+          <View style={{ flex: 1 }}>
+            {/* Triangle: right angle at top-left corner */}
+            <View style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: 0,
+              height: 0,
+              borderStyle: 'solid',
+              borderRightWidth: brick.width,
+              borderBottomWidth: brick.height,
+              borderRightColor: 'transparent',
+              borderBottomColor: brick.color
+            }} />
+            <View style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: brick.width,
+              height: brick.height,
+              justifyContent: 'center',
+              alignItems: 'center'
+            }}>
+              <Text style={styles.triangleText}>{brick.hits}</Text>
+            </View>
+          </View>
+        ) : brick.shape === 'tr2' ? (
+          <View style={{ flex: 1 }}>
+            <View style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: 0,
+              height: 0,
+              borderStyle: 'solid',
+              borderRightWidth: brick.width,
+              borderBottomWidth: brick.height,
+              borderRightColor: 'transparent',
+              borderBottomColor: brick.color
+            }} />
+            <View style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: brick.width,
+              height: brick.height,
+              justifyContent: 'center',
+              alignItems: 'center'
+            }}>
+              <Text style={styles.triangleText}>{brick.hits}</Text>
+            </View>
+          </View>
+        ) : brick.shape === 'tr3' ? (
+          <View style={{ flex: 1 }}>
+            {/* Triangle: right angle at bottom-left corner */}
+            <View style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: 0,
+              height: 0,
+              borderStyle: 'solid',
+              borderRightWidth: brick.width,
+              borderBottomWidth: brick.height,
+              borderRightColor: 'transparent',
+              borderBottomColor: brick.color
+            }} />
+            <View style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: brick.width,
+              height: brick.height,
+              justifyContent: 'center',
+              alignItems: 'center'
+            }}>
+              <Text style={styles.triangleText}>{brick.hits}</Text>
+            </View>
+          </View>
+        ) : brick.shape === 'bla' ? (
+          <View style={{ flex: 1, backgroundColor: brick.color, justifyContent: 'center', alignItems: 'center' }}>
+            <Text style={styles.brickText}>{brick.hits}</Text>
+          </View>
+        ) : null}
+      </View>
+    );
+  };
+
   return (
     <GestureHandlerRootView style={styles.container}>
       {/* Header */}
@@ -497,66 +539,6 @@ const BallBlasterGame: React.FC = () => {
         </View>
       </View>
 
-      {showSubjectSelect && (
-        <View style={styles.subjectSelectionContainer}>
-          <Text style={styles.subjectSelectionTitle}>SELECT YOUR SUBJECT</Text>
-          {PRESET_SUBJECTS.map((subject) => (
-            <TouchableOpacity
-              key={subject.id}
-              style={[
-                styles.subjectButton,
-                selectedSubject === subject.id && styles.subjectButtonSelected,
-              ]}
-              onPress={() => handleSubjectSelect(subject.id)}
-            >
-              <Text
-                style={[
-                  styles.subjectButtonText,
-                  selectedSubject === subject.id && styles.subjectButtonTextSelected,
-                ]}
-              >
-                {subject.name}
-              </Text>
-            </TouchableOpacity>
-          ))}
-          
-        </View>
-      )}
-
-      {(isLaunching.current || isStreaming) && currentFacts[displayedFactIndex] && (
-        <RNAnimated.View 
-          style={[
-            styles.cyberOverlay,
-            { opacity: overlayFadeAnim }
-          ]}
-        >
-          <View style={styles.factContainer}>
-            <StreamingText 
-              text={currentFacts[displayedFactIndex]}
-              onComplete={() => {
-                // Wait 1 second, then fade out
-                setTimeout(() => {
-                  RNAnimated.timing(overlayFadeAnim, {
-                    toValue: 0,
-                    duration: 500,
-                    useNativeDriver: true,
-                  }).start(() => {
-                    setIsStreaming(false);
-                    overlayFadeAnim.setValue(1); // Reset for next timre
-                    // Update fact index after fade completes
-                    setTimeout(() => {
-                      setDisplayedFactIndex(prev => 
-                        prev < currentFacts.length - 1 ? prev + 1 : prev
-                      );
-                    }, 0);
-                  });
-                }, 1000);
-              }}
-            />
-          </View>
-        </RNAnimated.View>
-      )}
-
       <PanGestureHandler
         onGestureEvent={onGestureEvent}
         onEnded={onGestureEnd}
@@ -564,49 +546,31 @@ const BallBlasterGame: React.FC = () => {
         onCancelled={onGestureEnd}
       >
         <View style={styles.gameArea}>
-          {/* Direction Indicator */}
+          {/* Launch direction indicator */}
           {touchActive.current && (
-            <View style={styles.directionIndicatorContainer}>
-              <RNAnimated.View
+            <View
+              style={[
+                styles.directionIndicatorContainer,
+                {
+                  left: lastBallX.current,
+                  top: LAUNCH_Y,
+                }
+              ]}
+            >
+              <View
                 style={[
                   styles.directionIndicatorDash,
                   {
-                    left: lastBallX.current,
-                    top: LAUNCH_Y,
-                    transform: [{ rotate: `${launchAngle.value}rad` }],
-                    borderColor: canLaunch ? 'rgba(255, 255, 255, 0.25)' : 'rgba(255, 0, 0, 0.5)',
+                    borderColor: canLaunch ? 'rgba(255,255,255,0.25)' : 'rgba(255,0,0,0.5)'
                   },
+                  indicatorStyle
                 ]}
               />
             </View>
           )}
 
           {/* Bricks */}
-          {bricks.map((brick) =>
-            brick.visible && (
-              <View
-                key={brick.id}
-                style={[
-                  styles.brick,
-                  {
-                    left: brick.x,
-                    top: brick.y,
-                    width: brick.width,
-                    height: brick.height,
-                    backgroundColor: brick.color,
-                    opacity: 1,
-                  },
-                ]}
-              >
-                <Text style={[styles.brickText, { 
-                  color: brick.hits >= 4 ? '#fff' : '#000',
-                  opacity: brick.hits >= 4 ? 1 : 0.8,
-                }]}>
-                  {brick.hits}
-                </Text>
-              </View>
-            )
-          )}
+          {bricks.map(renderBrick)}
 
           {/* Balls */}
           {balls.map((ball) => (
@@ -619,9 +583,6 @@ const BallBlasterGame: React.FC = () => {
                   top: ball.y - BALL_RADIUS,
                   width: BALL_RADIUS * 2,
                   height: BALL_RADIUS * 2,
-                  backgroundColor: '#fff',
-                  borderWidth: 2,
-                  borderColor: '#000',
                 },
               ]}
             />
@@ -631,7 +592,7 @@ const BallBlasterGame: React.FC = () => {
 
       {/* Bottom Controls */}
       <View style={styles.bottomControls}>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.controlButton}
           onPress={recallBalls}
         >
@@ -652,7 +613,7 @@ const BallBlasterGame: React.FC = () => {
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Level {gameState.level} Complete!</Text>
             <Text style={styles.modalScore}>Score: {score}</Text>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.modalButton}
               onPress={startNextLevel}
             >
@@ -673,7 +634,7 @@ const BallBlasterGame: React.FC = () => {
             <Text style={styles.modalTitle}>Game Over</Text>
             <Text style={styles.modalScore}>Final Score: {score}</Text>
             <Text style={styles.modalLevel}>Made it to Level {gameState.level}</Text>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.modalButton}
               onPress={restartGame}
             >
@@ -686,12 +647,12 @@ const BallBlasterGame: React.FC = () => {
   );
 };
 
-
 // ----------------- STYLES -----------------
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0a0a20', // Deep blue-black background
+    backgroundColor: '#e8e8e8',
+    justifyContent: 'space-between',
   },
   header: {
     height: HEADER_HEIGHT,
@@ -699,14 +660,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
-    backgroundColor: 'rgba(41, 21, 71, 0.9)', // Purple tint
+    backgroundColor: '#000000',
     borderBottomWidth: 2,
-    borderBottomColor: '#ff2d55', // Neon pink
-    shadowColor: '#ff2d55',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.5,
-    shadowRadius: 5,
-    elevation: 8,
+    borderBottomColor: '#000000',
   },
   scoreSection: {
     alignItems: 'center',
@@ -715,307 +671,147 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   scoreLabel: {
-    color: '#8a8aff', // Soft blue
-    fontSize: 16,
+    color: '#e8e8e8',
+    fontSize: 12,
     fontWeight: 'bold',
-    textShadowColor: '#8a8aff',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 8,
+    fontFamily: 'monospace',
   },
   scoreValue: {
-    color: '#fff',
-    fontSize: 28,
+    color: '#e8e8e8',
+    fontSize: 20,
     fontWeight: 'bold',
-    textShadowColor: '#ff2d55',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 10,
+    fontFamily: 'monospace',
   },
   ballLabel: {
-    color: '#8a8aff',
-    fontSize: 16,
+    color: '#e8e8e8',
+    fontSize: 12,
     fontWeight: 'bold',
-    textShadowColor: '#8a8aff',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 8,
+    fontFamily: 'monospace',
   },
   ballValue: {
-    color: '#00ff9f', // Neon green
-    fontSize: 28,
+    color: '#e8e8e8',
+    fontSize: 20,
     fontWeight: 'bold',
-    textShadowColor: '#00ff9f',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 10,
+    fontFamily: 'monospace',
   },
   gameArea: {
     flex: 1,
-    backgroundColor: '#0a0a20',
+    backgroundColor: '#e8e8e8',
+    alignSelf: 'stretch',
+    position: 'relative',
   },
   ball: {
     position: 'absolute',
     borderRadius: BALL_RADIUS,
-    backgroundColor: '#fff',
-    borderWidth: 2,
-    borderColor: '#ff2d55',
-    shadowColor: '#ff2d55',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 6,
-    elevation: 8,
-    zIndex: 100,
+    backgroundColor: '#000000',
+    borderWidth: 0,
   },
-  brick: {
-    position: 'absolute',
-    borderRadius: 3,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.8,
-    shadowRadius: 3,
-    elevation: 5,
+  brickText: {
+    color: '#e8e8e8',
+    fontWeight: 'bold',
+    fontSize: 10,
+    fontFamily: 'monospace',
+  },
+  triangleText: {
+    color: '#e8e8e8',
+    fontWeight: 'bold',
+    fontSize: 10,
+    fontFamily: 'monospace',
   },
   directionIndicatorContainer: {
     position: 'absolute',
+    width: 0,
     height: 0,
-    width: 100,
-    transformOrigin: 'left',
-    zIndex: 1000,
   },
   directionIndicatorDash: {
-    position: 'absolute',
-    height: 0,
-    width: 250,
+    position: 'relative',
+    width: 150,
     borderWidth: 1,
-    borderColor: 'rgba(255, 45, 85, 0.6)', // Neon pink with transparency
     borderStyle: 'dotted',
-    transformOrigin: 'left',
-    shadowColor: '#ff2d55',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 4,
-    zIndex: 1000,
+    transformOrigin: '0 0',
   },
   bottomControls: {
     height: BOTTOM_CONTROLS_HEIGHT,
-    backgroundColor: 'rgba(41, 21, 71, 0.9)', // Purple tint
+    backgroundColor: '#000000',
     borderTopWidth: 2,
-    borderTopColor: '#ff2d55', // Neon pink
+    borderTopColor: '#000000',
     flexDirection: 'row',
     justifyContent: 'space-evenly',
     alignItems: 'center',
     paddingHorizontal: 10,
-    paddingBottom: 20,
-    shadowColor: '#ff2d55',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.5,
-    shadowRadius: 5,
-    elevation: 8,
-    zIndex: 20,
+    paddingBottom: 10,
   },
   controlButton: {
-    backgroundColor: 'rgba(255, 45, 85, 0.2)', // Neon pink with high transparency
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 25,
-    borderWidth: 1,
-    borderColor: '#ff2d55',
-    minWidth: 80,
+    backgroundColor: '#e8e8e8',
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    borderRadius: 0,
+    borderWidth: 2,
+    borderColor: '#000000',
+    minWidth: 70,
     alignItems: 'center',
-    shadowColor: '#ff2d55',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 4,
   },
   controlButtonText: {
-    color: '#fff',
-    fontSize: 14,
+    color: '#000000',
+    fontSize: 12,
     fontWeight: 'bold',
-    textShadowColor: '#ff2d55',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 8,
+    fontFamily: 'monospace',
   },
   buttonPlaceholder: {
-    width: 80,
-    height: 42,
-    borderRadius: 25,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 45, 85, 0.3)',
-    backgroundColor: 'rgba(255, 45, 85, 0.1)',
+    width: 70,
+    height: 35,
+    borderRadius: 0,
+    borderWidth: 2,
+    borderColor: '#404040',
+    backgroundColor: '#202020',
     opacity: 0.5,
   },
   modalContainer: {
     flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.9)',
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(10, 10, 32, 0.9)', // Dark blue-black with transparency
   },
   modalContent: {
-    backgroundColor: 'rgba(41, 21, 71, 0.95)', // Purple tint
-    padding: 30,
-    borderRadius: 15,
+    backgroundColor: '#e8e8e8',
+    padding: 20,
+    borderRadius: 0,
     alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#ff2d55',
-    shadowColor: '#ff2d55',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 10,
-    elevation: 8,
+    borderWidth: 4,
+    borderColor: '#000000',
   },
   modalTitle: {
-    color: '#fff',
-    fontSize: 24,
+    color: '#000000',
+    fontSize: 20,
     fontWeight: 'bold',
     marginBottom: 15,
-    textShadowColor: '#ff2d55',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 10,
+    fontFamily: 'monospace',
   },
   modalScore: {
-    color: '#00ff9f', // Neon green
-    fontSize: 20,
+    color: '#000000',
+    fontSize: 16,
     marginBottom: 10,
-    textShadowColor: '#00ff9f',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 8,
+    fontFamily: 'monospace',
   },
   modalLevel: {
-    color: '#8a8aff',
-    fontSize: 16,
+    color: '#000000',
+    fontSize: 14,
     marginBottom: 20,
-    textShadowColor: '#8a8aff',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 8,
+    fontFamily: 'monospace',
   },
   modalButton: {
-    backgroundColor: 'rgba(0, 255, 159, 0.2)', // Neon green with transparency
-    paddingHorizontal: 30,
-    paddingVertical: 12,
-    borderRadius: 25,
+    backgroundColor: '#000000',
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    borderRadius: 0,
     marginTop: 10,
-    borderWidth: 1,
-    borderColor: '#00ff9f',
-    shadowColor: '#00ff9f',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 6,
+    borderWidth: 0,
   },
   modalButtonText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: 'bold',
-    textShadowColor: '#00ff9f',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 8,
-  },
-  cyberOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(10, 10, 32, 0.3)', // Dark blue-black with low opacity
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 1000,
-    pointerEvents: 'none',
-  },
-  brickText: {
-    position: 'absolute',
-    width: '100%',
-    textAlign: 'center',
+    color: '#e8e8e8',
     fontSize: 14,
     fontWeight: 'bold',
-    lineHeight: BRICK_HEIGHT,
-  },
-  subjectSelectionContainer: {
-    display: 'flex',
-    flex: 1,
-    backgroundColor: '#0a0a20',
-    padding: 40,
-    justifyContent: 'center',
-  },
-  subjectSelectionTitle: {
-    color: '#fff',
-    fontSize: 32,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    paddingBottom: 30,
-    textShadowColor: '#ff2d55',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 10,
-    paddingTop: 60,
-  },
-  subjectButton: {
-    backgroundColor: 'rgba(41, 21, 71, 0.9)',
-    padding: 20,
-    borderRadius: 15,
-    marginVertical: 8,
-    borderWidth: 1,
-    borderColor: '#8a8aff',
-    shadowColor: '#8a8aff',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.5,
-    shadowRadius: 8,
-    elevation: 5,
-  },
-  subjectButtonSelected: {
-    backgroundColor: 'rgba(255, 45, 85, 0.2)',
-    borderColor: '#ff2d55',
-    shadowColor: '#ff2d55',
-    shadowOpacity: 0.8,
-    shadowRadius: 10,
-    elevation: 8,
-  },
-  subjectButtonText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    textShadowColor: '#8a8aff',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 6,
-  },
-  subjectButtonTextSelected: {
-    textShadowColor: '#ff2d55',
-    textShadowRadius: 8,
-  },
-  startButton: {
-    backgroundColor: 'rgba(0, 255, 159, 0.2)',
-    padding: 20,
-    borderRadius: 25,
-    marginTop: 30,
-    borderWidth: 1,
-    borderColor: '#00ff9f',
-    shadowColor: '#00ff9f',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  startButtonText: {
-    color: '#fff',
-    fontSize: 24,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    textShadowColor: '#00ff9f',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 8,
-  },
-  factContainer: {
-    position: 'absolute',
-    top: HEADER_HEIGHT + 20,
-    left: 20,
-    right: 20,
-    backgroundColor: 'rgba(0, 20, 0, 0.8)',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#00ff00',
-    shadowColor: '#00ff00',
-    shadowOffset: {
-      width: 0,
-      height: 0,
-    },
-    shadowOpacity: 0.5,
-    shadowRadius: 10,
-    elevation: 5,
+    fontFamily: 'monospace',
   },
 });
 
